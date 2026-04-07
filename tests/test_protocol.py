@@ -39,3 +39,19 @@ def test_assistant_message_supports_text_thinking_and_toolcalls() -> None:
     assert message.content == "hello"
     assert message.thinking == "reasoning"
     assert message.toolCalls[0].name == "lookup"
+
+
+def test_stream_event_legacy_aliases_map_to_canonical_lifecycle() -> None:
+    event = StreamEvent(type="toolcall_delta", toolCallId="call_1", argumentsDelta='{"q":"x"}')
+
+    assert event.lifecycle == "update"
+    assert event.itemType == "tool_call"
+    assert event.delta == '{"q":"x"}'
+
+
+def test_stream_event_done_is_terminal_message_event() -> None:
+    event = StreamEvent(type="done")
+
+    assert event.lifecycle == "done"
+    assert event.itemType == "message"
+    assert event.is_terminal is True

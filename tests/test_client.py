@@ -109,6 +109,22 @@ class StubProvider(Provider):
         )
 
 
+class RaisingProvider(Provider):
+    name = "stub"
+
+    def supports(self, model: Model) -> bool:
+        return model.provider == self.name
+
+    async def stream(
+        self,
+        model: Model,
+        context: Context,
+        options: Options,
+    ) -> AsyncIterator[StreamEvent]:
+        raise RuntimeError("provider crashed")
+        yield StreamEvent(type="done", provider=model.provider, model=model)  # pragma: no cover
+
+
 @pytest.fixture
 def stub_model() -> Model:
     return Model(
@@ -234,6 +250,37 @@ async def test_stream_simple_returns_bounded_queue_session(
 
 
 @pytest.mark.asyncio
+async def test_stream_clamps_reasoning_to_model_capability(
+    sample_context: Context,
+) -> None:
+    provider = StubProvider()
+    registry = ProviderRegistry([provider])
+    limited_model = Model(
+        id="stub:test-model-limited",
+        provider="stub",
+        inputPrice=0.1,
+        outputPrice=0.2,
+        contextWindow=128000,
+        maxOutputTokens=4096,
+        supports_reasoning_levels=("off", "minimal", "low"),
+    )
+
+    session = await streamSimple(
+        limited_model,
+        sample_context,
+        reasoning="xhigh",
+        registry=registry,
+    )
+    async for _ in session.consume():
+        pass
+
+    assert provider.seen_options is not None
+    assert provider.seen_options.reasoning == "low"
+    assert provider.seen_options.metadata["_requestedReasoning"] == "xhigh"
+    assert provider.seen_options.metadata["_clampedReasoning"] == "low"
+
+
+@pytest.mark.asyncio
 async def test_complete_aggregates_done_message_from_queue(
     stub_model: Model,
     sample_context: Context,
@@ -256,6 +303,17 @@ async def test_complete_raises_on_error_event_from_queue(
     registry = ProviderRegistry([StubProvider(fail=True)])
 
     with pytest.raises(ProviderResponseError, match="boom"):
+        await complete(stub_model, sample_context, registry=registry)
+
+
+@pytest.mark.asyncio
+async def test_complete_converts_provider_exception_to_error_event(
+    stub_model: Model,
+    sample_context: Context,
+) -> None:
+    registry = ProviderRegistry([RaisingProvider()])
+
+    with pytest.raises(ProviderResponseError, match="provider crashed"):
         await complete(stub_model, sample_context, registry=registry)
 
 

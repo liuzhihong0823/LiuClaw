@@ -256,13 +256,13 @@ async def streamAssistantResponse(
 
     try:
         async for raw_event in session.consume():
-            if raw_event.type == "start":
+            if raw_event.type == "start" and raw_event.lifecycle == "start":
                 if not message_started:
                     message_started = True
                     await _emit_event(queue, event_type="message_start", state=state)
                 continue
 
-            if raw_event.type == "done":
+            if raw_event.type == "done" and raw_event.lifecycle == "done":
                 final_message = replace(raw_event.assistantMessage or state.currentMessage or AssistantMessage())
                 state.currentMessage = replace(final_message)
                 if not message_started:
@@ -276,26 +276,26 @@ async def streamAssistantResponse(
                 )
                 return final_message
 
-            if raw_event.type == "error":
+            if raw_event.type == "error" and raw_event.lifecycle == "error":
                 state.error = raw_event.error or "provider emitted error event"
                 return None
 
             if state.currentMessage is None:
                 state.currentMessage = AssistantMessage(content="", thinking="", toolCalls=[])
-            if raw_event.type == "text_delta":
+            if raw_event.itemType == "text" and raw_event.lifecycle == "update":
                 state.currentMessage.content += raw_event.text or ""
-            elif raw_event.type == "thinking_delta":
+            elif raw_event.itemType == "thinking" and raw_event.lifecycle == "update":
                 state.currentMessage.thinking += raw_event.thinking or ""
-            elif raw_event.type == "toolcall_start" and raw_event.toolCallId:
+            elif raw_event.itemType == "tool_call" and raw_event.lifecycle == "start" and raw_event.toolCallId:
                 state.currentMessage.toolCalls.append(
                     ToolCall(id=raw_event.toolCallId, name=raw_event.toolName or "", arguments="")
                 )
-            elif raw_event.type == "toolcall_delta" and raw_event.toolCallId:
+            elif raw_event.itemType == "tool_call" and raw_event.lifecycle == "update" and raw_event.toolCallId:
                 for tool_call in state.currentMessage.toolCalls:
                     if tool_call.id == raw_event.toolCallId:
                         tool_call.arguments += raw_event.argumentsDelta or ""
                         break
-            elif raw_event.type == "toolcall_end" and raw_event.toolCallId:
+            elif raw_event.itemType == "tool_call" and raw_event.lifecycle == "done" and raw_event.toolCallId:
                 for tool_call in state.currentMessage.toolCalls:
                     if tool_call.id == raw_event.toolCallId and raw_event.arguments is not None:
                         tool_call.arguments = raw_event.arguments

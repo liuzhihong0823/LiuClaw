@@ -147,3 +147,5 @@ async def test_zhipu_stream_maps_text_thinking_and_toolcalls() -> None:
     assert events[-1].assistantMessage.thinking == "先分析"
     assert events[-1].assistantMessage.toolCalls[0].arguments == '{"q":"glm"}'
     assert events[-1].usage == {"prompt_tokens": 12, "completion_tokens": 6}
+    assert events[-1].responseId == "resp_1"
+    assert events[-1].providerMetadata["request_model"] == "glm-4.7"

@@ -17,12 +17,14 @@ def build_reasoning_config(model: Any, reasoning: Any) -> dict[str, Any]:
     if provider == "openai":
         return {"reasoning": {"effort": level}}
     if provider == "anthropic":
-        budget_map = {"low": 1024, "medium": 4096, "high": 8192}
+        if level in {"off", "minimal"}:
+            return {}
+        budget_map = {"low": 1024, "medium": 4096, "high": 8192, "xhigh": 16384}
         return {"thinking": {"type": "enabled", "budget_tokens": budget_map[level]}}
     if provider == "zhipu":
         runtime_model = getattr(model, "id", "")
         runtime_name = runtime_model.split(":", 1)[1] if ":" in runtime_model else runtime_model
-        if level == "low":
+        if level in {"off", "minimal", "low"}:
             return {"thinking": {"type": "disabled"}}
         if level == "medium":
             return {"thinking": {"type": "enabled"}}

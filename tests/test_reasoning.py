@@ -48,6 +48,12 @@ def test_reasoning_mapping_for_anthropic() -> None:
     assert config == {"thinking": {"type": "enabled", "budget_tokens": 4096}}
 
 
+def test_reasoning_mapping_for_anthropic_xhigh() -> None:
+    config = build_reasoning_config(ANTHROPIC_MODEL, "xhigh")
+
+    assert config == {"thinking": {"type": "enabled", "budget_tokens": 16384}}
+
+
 def test_reasoning_mapping_for_zhipu_high() -> None:
     config = build_reasoning_config(ZHIPU_MODEL, "high")
 

@@ -36,19 +36,27 @@ class EventBuilder:
 
         return StreamEvent(
             type=event_type,
+            lifecycle=kwargs.pop("lifecycle", None),
+            itemType=kwargs.pop("itemType", None),
+            messageId=kwargs.pop("messageId", None),
             model=kwargs.pop("model", self._model),
             provider=kwargs.pop("provider", self._provider),
             text=kwargs.pop("text", None),
             thinking=kwargs.pop("thinking", None),
+            delta=kwargs.pop("delta", None),
             toolCallId=kwargs.pop("toolCallId", None),
             toolName=kwargs.pop("toolName", None),
             argumentsDelta=kwargs.pop("argumentsDelta", None),
             arguments=kwargs.pop("arguments", None),
             assistantMessage=kwargs.pop("assistantMessage", None),
+            toolResultMessage=kwargs.pop("toolResultMessage", None),
             usage=kwargs.pop("usage", None),
             stopReason=kwargs.pop("stopReason", None),
+            responseId=kwargs.pop("responseId", None),
             error=kwargs.pop("error", None),
+            details=kwargs.pop("details", None),
             metadata=kwargs.pop("metadata", {}),
+            providerMetadata=kwargs.pop("providerMetadata", {}),
             rawEvent=kwargs.pop("rawEvent", None),
         )
 
@@ -63,7 +71,10 @@ class EventBuilder:
 
         return self.build(
             "error",
+            lifecycle="error",
+            itemType="message",
             error=error,
+            details=metadata,
             metadata=dict(metadata or {}),
             rawEvent=raw_event,
         )
@@ -74,7 +85,9 @@ class EventBuilder:
         *,
         usage: dict[str, Any] | None = None,
         stop_reason: str | None = None,
+        response_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        provider_metadata: dict[str, Any] | None = None,
         raw_event: Any | None = None,
     ) -> StreamEvent:
         """基于默认上下文创建一个统一 `done` 事件。"""
@@ -85,7 +98,9 @@ class EventBuilder:
             provider=self._provider,
             usage=usage,
             stop_reason=stop_reason,
+            response_id=response_id,
             metadata=metadata,
+            provider_metadata=provider_metadata,
             raw_event=raw_event,
         )
 
@@ -142,27 +157,27 @@ class StreamAccumulator:
     def apply(self, event: StreamEvent) -> AssistantMessage | None:
         """消费一个统一事件，并在 `done` 时返回最终消息。"""
 
-        if event.type == "text_delta" and event.text:
+        if event.itemType == "text" and event.lifecycle == "update" and event.text:
             self._assistant_message.content += event.text
-        elif event.type == "thinking_delta" and event.thinking:
+        elif event.itemType == "thinking" and event.lifecycle == "update" and event.thinking:
             self._assistant_message.thinking += event.thinking
-        elif event.type == "toolcall_start" and event.toolCallId:
+        elif event.itemType == "tool_call" and event.lifecycle == "start" and event.toolCallId:
             self._ensure_tool_call(event.toolCallId, event.toolName)
-        elif event.type == "toolcall_delta" and event.toolCallId:
+        elif event.itemType == "tool_call" and event.lifecycle == "update" and event.toolCallId:
             tool_call = self._ensure_tool_call(event.toolCallId, event.toolName)
             tool_call.arguments += event.argumentsDelta or ""
-        elif event.type == "toolcall_end" and event.toolCallId:
+        elif event.itemType == "tool_call" and event.lifecycle == "done" and event.toolCallId:
             tool_call = self._ensure_tool_call(event.toolCallId, event.toolName)
             if event.arguments is not None:
                 tool_call.arguments = event.arguments
-        elif event.type == "done":
+        elif event.type == "done" and event.lifecycle == "done":
             self._done_event = event
             self._usage = event.usage
             self._stop_reason = event.stopReason
             if event.assistantMessage is not None:
                 self._assistant_message = replace(event.assistantMessage)
             return self._assistant_message
-        elif event.type == "error":
+        elif event.type == "error" and event.lifecycle == "error":
             self._error_event = event
         return None
 
@@ -210,7 +225,7 @@ async def consume_queue(
         event = await queue.get()
         yield event
         queue.task_done()
-        if event.type in {"done", "error"}:
+        if event.is_terminal:
             return
 
 
@@ -243,7 +258,7 @@ async def forward_stream_to_queue(
     try:
         async for event in event_stream:
             await enqueue_event(queue, event, put_timeout=put_timeout)
-            if event.type in {"done", "error"}:
+            if event.is_terminal:
                 return
     except asyncio.CancelledError:
         raise
@@ -324,18 +339,24 @@ def create_done_event(
     provider: str | None = None,
     usage: dict[str, Any] | None = None,
     stop_reason: str | None = None,
+    response_id: str | None = None,
     metadata: dict[str, Any] | None = None,
+    provider_metadata: dict[str, Any] | None = None,
     raw_event: Any | None = None,
 ) -> StreamEvent:
     """根据最终消息构造统一 `done` 事件。"""
 
     return StreamEvent(
         type="done",
+        lifecycle="done",
+        itemType="message",
         model=model,
         provider=provider or (model.provider if model is not None else None),
         assistantMessage=assistant_message,
         usage=usage,
         stopReason=stop_reason,
+        responseId=response_id,
         metadata=dict(metadata or {}),
+        providerMetadata=dict(provider_metadata or {}),
         rawEvent=raw_event,
     )

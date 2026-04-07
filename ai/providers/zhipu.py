@@ -259,11 +259,13 @@ class ZhipuProvider(Provider):
         thinking_started = False
         stop_reason: str | None = None
         usage: dict[str, Any] | None = None
+        response_id: str | None = None
 
         try:
-            yield builder.build("start")
+            yield builder.build("start", lifecycle="start", itemType="message")
             async for chunk in self._iter_sse_chunks(request, timeout=options.timeout):
                 raw_event = chunk if options.includeRawProviderEvents else None
+                response_id = chunk.get("id", response_id)
                 choices = chunk.get("choices") or []
                 usage = chunk.get("usage", usage)
                 if not choices:
@@ -363,10 +365,11 @@ class ZhipuProvider(Provider):
                 provider=self.name,
                 usage=usage,
                 stop_reason=stop_reason,
+                response_id=response_id,
+                provider_metadata={"request_model": request.get("model")},
             )
-        except AuthenticationError:
-            raise
+        except AuthenticationError as exc:
+            yield builder.build_error(str(exc), metadata={"source": "provider", "provider": self.name})
         except Exception as exc:
-            if isinstance(exc, ProviderResponseError):
-                raise
-            raise ProviderResponseError(f"Zhipu streaming failed: {exc}") from exc
+            error = exc if isinstance(exc, ProviderResponseError) else ProviderResponseError(f"Zhipu streaming failed: {exc}")
+            yield builder.build_error(str(error), metadata={"source": "provider", "provider": self.name, "exception_type": type(exc).__name__})

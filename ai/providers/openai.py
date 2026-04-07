@@ -163,7 +163,12 @@ class OpenAIProvider(Provider):
         try:
             from openai import AsyncOpenAI
         except ImportError as exc:
-            raise ProviderResponseError("openai package is not installed") from exc
+            builder = EventBuilder(model=model, provider=self.name)
+            yield builder.build_error(
+                "openai package is not installed",
+                metadata={"source": "provider", "provider": self.name, "exception_type": type(exc).__name__},
+            )
+            return
 
         client = AsyncOpenAI(**self._client_kwargs(options))
         builder = EventBuilder(model=model, provider=self.name)
@@ -174,7 +179,7 @@ class OpenAIProvider(Provider):
 
         try:
             async with client.responses.stream(**request) as response_stream:
-                yield builder.build("start")
+                yield builder.build("start", lifecycle="start", itemType="message")
                 async for event in response_stream:
                     event_type = getattr(event, "type", None)
                     raw_event = event if options.includeRawProviderEvents else None
@@ -212,9 +217,19 @@ class OpenAIProvider(Provider):
                     yield builder.build("text_end")
                 if thinking_started:
                     yield builder.build("thinking_end")
-                final_message.metadata["response"] = await response_stream.get_final_response()
-                yield create_done_event(final_message, model=model, provider=self.name)
-        except AuthenticationError:
-            raise
+                final_response = await response_stream.get_final_response()
+                final_message.metadata["response"] = final_response
+                yield create_done_event(
+                    final_message,
+                    model=model,
+                    provider=self.name,
+                    usage=getattr(final_response, "usage", None),
+                    stop_reason=getattr(final_response, "status", None),
+                    response_id=getattr(final_response, "id", None),
+                    provider_metadata={"response_status": getattr(final_response, "status", None)},
+                )
+        except AuthenticationError as exc:
+            yield builder.build_error(str(exc), metadata={"source": "provider", "provider": self.name})
         except Exception as exc:  # pragma: no cover
-            raise ProviderResponseError(f"OpenAI streaming failed: {exc}") from exc
+            error = exc if isinstance(exc, ProviderResponseError) else ProviderResponseError(f"OpenAI streaming failed: {exc}")
+            yield builder.build_error(str(error), metadata={"source": "provider", "provider": self.name, "exception_type": type(exc).__name__})

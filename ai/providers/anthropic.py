@@ -161,7 +161,12 @@ class AnthropicProvider(Provider):
         try:
             from anthropic import AsyncAnthropic
         except ImportError as exc:
-            raise ProviderResponseError("anthropic package is not installed") from exc
+            builder = EventBuilder(model=model, provider=self.name)
+            yield builder.build_error(
+                "anthropic package is not installed",
+                metadata={"source": "provider", "provider": self.name, "exception_type": type(exc).__name__},
+            )
+            return
 
         client = AsyncAnthropic(**self._client_kwargs(options))
         builder = EventBuilder(model=model, provider=self.name)
@@ -174,7 +179,7 @@ class AnthropicProvider(Provider):
 
         try:
             async with client.messages.stream(**request) as stream:
-                yield builder.build("start")
+                yield builder.build("start", lifecycle="start", itemType="message")
                 async for event in stream:
                     event_type = getattr(event, "type", None)
                     raw_event = event if options.includeRawProviderEvents else None
@@ -235,9 +240,19 @@ class AnthropicProvider(Provider):
                     yield builder.build("text_end")
                 if thinking_started:
                     yield builder.build("thinking_end")
-                final_message.metadata["message"] = await stream.get_final_message()
-                yield create_done_event(final_message, model=model, provider=self.name)
-        except AuthenticationError:
-            raise
+                final_response = await stream.get_final_message()
+                final_message.metadata["message"] = final_response
+                yield create_done_event(
+                    final_message,
+                    model=model,
+                    provider=self.name,
+                    usage=getattr(final_response, "usage", None),
+                    stop_reason=getattr(final_response, "stop_reason", None),
+                    response_id=getattr(final_response, "id", None),
+                    provider_metadata={"stop_type": getattr(final_response, "stop_type", None)},
+                )
+        except AuthenticationError as exc:
+            yield builder.build_error(str(exc), metadata={"source": "provider", "provider": self.name})
         except Exception as exc:  # pragma: no cover
-            raise ProviderResponseError(f"Anthropic streaming failed: {exc}") from exc
+            error = exc if isinstance(exc, ProviderResponseError) else ProviderResponseError(f"Anthropic streaming failed: {exc}")
+            yield builder.build_error(str(error), metadata={"source": "provider", "provider": self.name, "exception_type": type(exc).__name__})

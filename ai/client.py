@@ -34,11 +34,16 @@ def _prepare_options(model: Model, options: Options | None) -> Options:
     """规范化 options，并附加 provider 专用 reasoning 元数据。"""
 
     resolved = ensure_options(options)
+    clamped_reasoning = model.clamp_reasoning(resolved.reasoning)
+    metadata = merge_reasoning_metadata(resolved.metadata, model, clamped_reasoning)
+    if clamped_reasoning != resolved.reasoning:
+        metadata["_requestedReasoning"] = resolved.reasoning
+        metadata["_clampedReasoning"] = clamped_reasoning
     return Options(
-        reasoning=resolved.reasoning,
+        reasoning=clamped_reasoning,
         temperature=resolved.temperature,
         maxTokens=resolved.maxTokens,
-        metadata=merge_reasoning_metadata(resolved.metadata, model, resolved.reasoning),
+        metadata=metadata,
         timeout=resolved.timeout,
         includeRawProviderEvents=resolved.includeRawProviderEvents,
         streamQueueMaxSize=resolved.streamQueueMaxSize,
@@ -79,9 +84,12 @@ async def _produce_events(
     except Exception as exc:
         error_event = StreamEvent(
             type="error",
+            lifecycle="error",
+            itemType="message",
             model=model,
             provider=getattr(model, "provider", None),
             error=str(exc),
+            details={"source": "provider", "exception_type": type(exc).__name__},
         )
         await _put_event(queue, error_event, put_timeout=options.streamPutTimeout)
 
