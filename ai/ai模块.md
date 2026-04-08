@@ -1,282 +1,160 @@
-# ai 模块说明文档
+# `ai` 模块说明
 
-## 1. 模块定位
+## 1. 模块职责
 
-`ai` 模块是一个面向上层业务的“统一 LLM 接入层”。
+`ai` 是本项目的统一大模型接入层。它不是某一家 SDK 的轻包装，而是把模型、消息、工具调用、流式事件、provider 配置和上下文预处理统一成一套稳定接口，供上层模块直接依赖。
 
-它的目标是把不同大模型厂商的调用方式统一为一套稳定的 Python 异步接口，让上层业务不需要直接理解每个厂商 SDK 的差异、流式事件差异、推理参数差异和工具调用差异。
+从代码结构看，这个模块主要解决六件事：
 
-当前模块已经接入以下 provider：
+1. 定义统一的数据协议，包括 `Context`、消息类型、内容块、`Model`、`StreamEvent`。
+2. 提供统一调用入口，包括 `stream()`、`complete()` 以及简化版 `streamSimple()`、`completeSimple()`。
+3. 维护模型目录和 provider 配置覆盖，把静态模型定义和本地配置合并到运行时模型对象中。
+4. 维护 provider 注册与懒实例化，把不同厂商的流式输出转成统一事件流。
+5. 在调用前完成上下文清理、能力裁剪、thinking 兼容处理、工具定义转换和窗口检测。
+6. 提供通用工具能力，包括上下文窗口估算、Unicode 清理、JSON Schema 参数校验、流式聚合。
+
+当前内置 provider 有四类：
 
 - `openai`
+- `openai_compatible`
 - `anthropic`
 - `zhipu`
 
-当前模块采用以下设计原则：
+对外导出入口位于 [ai/__init__.py](/Users/admin/PyCharmProject/LiuClaw/ai/__init__.py)。
 
-- `async` 优先
-- 队列式流式消费优先
-- 上层只理解统一类型，不直接处理厂商原始协议
-- `complete()` 基于 `stream()` 聚合，避免两套行为分叉
-- provider 只负责“协议适配”，不负责上层会话管理
+## 2. 模块分层
 
----
+`ai/` 目录可以按职责分成下面几层：
 
-## 2. 对外公共能力
+### 2.1 协议与核心类型
 
-模块根导出位于 [__init__.py](/Users/admin/PyCharmProject/LiuClaw/ai/__init__.py)。
+- [ai/types.py](/Users/admin/PyCharmProject/LiuClaw/ai/types.py)
+- [ai/options.py](/Users/admin/PyCharmProject/LiuClaw/ai/options.py)
+- [ai/errors.py](/Users/admin/PyCharmProject/LiuClaw/ai/errors.py)
 
-### 2.1 主要函数
+这里定义统一对象模型，包括消息、内容块、工具、模型、流事件、调用选项和错误类型。上层与 provider 层都围绕这套协议交互。
 
-- `stream(model, context, options=None)`
-- `complete(model, context, options=None)`
-- `streamSimple(...)`
-- `completeSimple(...)`
+### 2.2 调用入口
 
-### 2.2 主要公共类型
+- [ai/client.py](/Users/admin/PyCharmProject/LiuClaw/ai/client.py)
+- [ai/session.py](/Users/admin/PyCharmProject/LiuClaw/ai/session.py)
 
-- `Context`
+`client.py` 负责把一次调用串起来：规范化模型和上下文、附加 reasoning 元数据、转换上下文、检测窗口、启动 provider 流并返回 `StreamSession`，或者进一步聚合出 `AssistantMessage`。
+
+### 2.3 模型与配置中心
+
+- [ai/models.py](/Users/admin/PyCharmProject/LiuClaw/ai/models.py)
+- [ai/model_registry.py](/Users/admin/PyCharmProject/LiuClaw/ai/model_registry.py)
+- [ai/config.py](/Users/admin/PyCharmProject/LiuClaw/ai/config.py)
+- [ai/reasoning.py](/Users/admin/PyCharmProject/LiuClaw/ai/reasoning.py)
+
+这一层负责内置模型目录、本地 `ai.config.json` 读取、provider 配置注入、模型能力覆盖，以及统一 reasoning 等级到厂商参数的映射。
+
+### 2.4 Provider 适配层
+
+- [ai/registry.py](/Users/admin/PyCharmProject/LiuClaw/ai/registry.py)
+- [ai/providers/base.py](/Users/admin/PyCharmProject/LiuClaw/ai/providers/base.py)
+- [ai/providers/openai.py](/Users/admin/PyCharmProject/LiuClaw/ai/providers/openai.py)
+- [ai/providers/anthropic.py](/Users/admin/PyCharmProject/LiuClaw/ai/providers/anthropic.py)
+- [ai/providers/zhipu.py](/Users/admin/PyCharmProject/LiuClaw/ai/providers/zhipu.py)
+
+这一层把统一 `Context` 转成厂商请求，并把厂商流式输出转成统一 `StreamEvent`。
+
+### 2.5 转换与清理层
+
+- [ai/converters/messages.py](/Users/admin/PyCharmProject/LiuClaw/ai/converters/messages.py)
+- [ai/converters/tools.py](/Users/admin/PyCharmProject/LiuClaw/ai/converters/tools.py)
+- [ai/converters/capabilities.py](/Users/admin/PyCharmProject/LiuClaw/ai/converters/capabilities.py)
+- [ai/converters/thinking.py](/Users/admin/PyCharmProject/LiuClaw/ai/converters/thinking.py)
+- [ai/utils/context_window.py](/Users/admin/PyCharmProject/LiuClaw/ai/utils/context_window.py)
+- [ai/utils/unicode.py](/Users/admin/PyCharmProject/LiuClaw/ai/utils/unicode.py)
+- [ai/utils/schema_validation.py](/Users/admin/PyCharmProject/LiuClaw/ai/utils/schema_validation.py)
+- [ai/utils/streaming.py](/Users/admin/PyCharmProject/LiuClaw/ai/utils/streaming.py)
+
+这里集中处理跨 provider 的兼容问题和调用前后的公共逻辑。
+
+## 3. 统一协议
+
+## 3.1 内容块模型
+
+`ai/types.py` 不再把消息内容限定为单一字符串，而是采用内容块模型：
+
+- `TextContent`
+- `ThinkingContent`
+- `ImageContent`
+- `ToolCallContent`
+- `ToolResultContent`
+
+`ContentBlocks` 是对内容块列表的包装，额外提供这些兼容视图：
+
+- `.text`：拼接文本块和工具结果文本
+- `.thinking`：拼接 thinking 块
+- `.tool_calls`：提取 `ToolCall`
+
+这意味着上层既可以按结构化内容块消费，也可以继续通过 `.text`、`.thinking` 读取兼容视图。
+
+## 3.2 消息类型
+
+统一消息分为三种：
+
 - `UserMessage`
 - `AssistantMessage`
 - `ToolResultMessage`
-- `Tool`
-- `ToolCall`
-- `Model`
-- `StreamEvent`
-- `Options`
-- `ReasoningConfig`
-- `StreamSession`
 
-### 2.3 主要异常
+其中：
 
-- `AIError`
-- `ProviderNotFoundError`
-- `AuthenticationError`
-- `UnsupportedFeatureError`
-- `ProviderResponseError`
+- `UserMessage.content` 只接受用户可发送的内容块，当前是文本和图片。
+- `AssistantMessage.content` 可以包含文本、thinking、工具调用和图片。
+- `ToolResultMessage` 通过 `toolCallId`、`toolName` 关联某次工具调用，`content` 中可放文本、图片或 `ToolResultContent`。
 
----
+`AssistantMessage` 仍保留若干兼容属性：
 
-## 3. 模块目录结构
+- `text`
+- `thinking`
+- `toolCalls`
 
-```text
-ai/
-  __init__.py
-  client.py
-  errors.py
-  models.py
-  options.py
-  reasoning.py
-  registry.py
-  session.py
-  types.py
-  converters/
-    messages.py
-    tools.py
-  providers/
-    base.py
-    openai.py
-    anthropic.py
-    zhipu.py
-  utils/
-    context_window.py
-    schema_validation.py
-    streaming.py
-    unicode.py
-```
+这些属性来自 `content` 的投影，不是独立状态源。
 
-各文件职责如下：
+## 3.3 Tool 与 ToolCall
 
-- [client.py](/Users/admin/PyCharmProject/LiuClaw/ai/client.py): 对外统一入口，负责准备上下文、准备配置、路由 provider、创建流式会话、聚合最终结果。
-- [types.py](/Users/admin/PyCharmProject/LiuClaw/ai/types.py): 核心统一类型定义。
-- [options.py](/Users/admin/PyCharmProject/LiuClaw/ai/options.py): 调用选项与 reasoning 配置定义。
-- [models.py](/Users/admin/PyCharmProject/LiuClaw/ai/models.py): 内置模型目录。
-- [reasoning.py](/Users/admin/PyCharmProject/LiuClaw/ai/reasoning.py): 统一 reasoning 到 provider 专用参数的映射层。
-- [registry.py](/Users/admin/PyCharmProject/LiuClaw/ai/registry.py): provider 懒加载注册中心。
-- [session.py](/Users/admin/PyCharmProject/LiuClaw/ai/session.py): 队列式流式会话封装。
-- [providers/base.py](/Users/admin/PyCharmProject/LiuClaw/ai/providers/base.py): provider 抽象接口。
-- [providers/openai.py](/Users/admin/PyCharmProject/LiuClaw/ai/providers/openai.py): OpenAI 适配器。
-- [providers/anthropic.py](/Users/admin/PyCharmProject/LiuClaw/ai/providers/anthropic.py): Anthropic 适配器。
-- [providers/zhipu.py](/Users/admin/PyCharmProject/LiuClaw/ai/providers/zhipu.py): 智谱 GLM 适配器。
-- [converters/messages.py](/Users/admin/PyCharmProject/LiuClaw/ai/converters/messages.py): 跨 provider 消息兼容转换。
-- [converters/tools.py](/Users/admin/PyCharmProject/LiuClaw/ai/converters/tools.py): 工具定义兼容转换。
-- [utils/streaming.py](/Users/admin/PyCharmProject/LiuClaw/ai/utils/streaming.py): 流式事件构造、聚合和队列辅助。
-- [utils/context_window.py](/Users/admin/PyCharmProject/LiuClaw/ai/utils/context_window.py): 上下文窗口估算与溢出检测。
-- [utils/schema_validation.py](/Users/admin/PyCharmProject/LiuClaw/ai/utils/schema_validation.py): 工具参数 JSON Schema 校验。
-- [utils/unicode.py](/Users/admin/PyCharmProject/LiuClaw/ai/utils/unicode.py): Unicode 清理与规范化。
+工具定义由 `Tool` 表示，核心字段是：
 
----
+- `name`
+- `description`
+- `inputSchema`
+- `metadata`
+- `renderMetadata`
 
-## 4. 核心类型说明
+工具调用由 `ToolCall` 表示，核心字段是：
 
-核心类型定义位于 [types.py](/Users/admin/PyCharmProject/LiuClaw/ai/types.py)。
+- `id`
+- `name`
+- `arguments`
+- `metadata`
 
-### 4.1 Context
+`ToolCall` 和 `ToolCallContent` 在初始化时都会调用 `parse_tool_arguments()`，因此既兼容字符串 JSON，也兼容已经解析好的字典。对应地，`arguments_text` 会用稳定 JSON 序列化输出，方便不同 provider 发送请求。
 
-`Context` 表示一次调用的统一上下文。
+## 3.4 Model
 
-```python
-@dataclass(slots=True)
-class Context:
-    systemPrompt: str | None = None
-    messages: list[ConversationMessage] = field(default_factory=list)
-    tools: list[Tool] = field(default_factory=list)
-```
+`Model` 是整个统一层的运行时模型对象，除了基础计费和窗口信息，还内置能力描述：
 
-字段说明：
+- `supports_reasoning_levels`
+- `supports_images`
+- `supports_prompt_cache`
+- `supports_session`
+- `providerConfig`
 
-- `systemPrompt`: 系统提示词。
-- `messages`: 历史对话消息。
-- `tools`: 本轮可用工具定义。
+其中 `clamp_reasoning()` 很关键。它会把用户请求的 reasoning 等级收敛到该模型真正支持的等级。例如测试覆盖了“请求 `high`，但模型只支持到 `medium`”的场景，最终会自动降级。
 
-注意事项：
+## 3.5 StreamEvent
 
-- 完整版接口统一要求传 `Context` 或能被规范化为 `Context` 的字典。
-- `Context` 中不直接保存 provider 原始消息结构。
+`StreamEvent` 是跨 provider 的统一流式协议。事件既保留旧式 `type`，也显式记录：
 
-### 4.2 Message 类型
+- `lifecycle`：`start` / `update` / `done` / `error`
+- `itemType`：`message` / `text` / `thinking` / `tool_call` / `tool_result` / `image`
 
-当前没有单一 `Message` 类，而是显式拆成三种消息类型。
+模块仍兼容旧式事件名：
 
-#### UserMessage
-
-表示用户消息。
-
-```python
-UserMessage(
-    content="你好",
-    metadata={},
-)
-```
-
-#### AssistantMessage
-
-表示 assistant 输出消息，也是 `complete()` 的最终返回对象。
-
-```python
-AssistantMessage(
-    content="最终文本",
-    thinking="模型思考内容",
-    toolCalls=[...],
-    metadata={},
-)
-```
-
-字段说明：
-
-- `content`: 最终文本内容。
-- `thinking`: 统一抽象后的思考内容。
-- `toolCalls`: assistant 发起的工具调用列表。
-- `metadata`: provider 原始响应或额外信息。
-
-`AssistantMessage.text` 是 `content` 的别名属性。
-
-#### ToolResultMessage
-
-表示工具执行后的结果回填消息。
-
-```python
-ToolResultMessage(
-    toolCallId="call_1",
-    toolName="lookup_weather",
-    content='{"temp": 26}',
-)
-```
-
-字段说明：
-
-- `toolCallId`: 对应 assistant 发起的工具调用 ID。
-- `toolName`: 工具名。
-- `content`: 工具执行结果文本。
-
-### 4.3 Tool 与 ToolCall
-
-#### Tool
-
-表示上层提供给模型的工具定义。
-
-```python
-Tool(
-    name="lookup_weather",
-    description="查询天气",
-    inputSchema={"type": "object", "properties": {...}},
-)
-```
-
-#### ToolCall
-
-表示 assistant 在响应中生成的一次工具调用。
-
-```python
-ToolCall(
-    id="call_1",
-    name="lookup_weather",
-    arguments='{"city":"Shanghai"}',
-)
-```
-
-注意：
-
-- `Tool` 是工具定义。
-- `ToolCall` 是模型发起的调用。
-- `ToolResultMessage` 是工具执行结果回填。
-- 三者不是同一个概念。
-
-### 4.4 Model
-
-`Model` 表示统一模型元数据。
-
-```python
-@dataclass(slots=True)
-class Model:
-    id: str
-    provider: str
-    inputPrice: float
-    outputPrice: float
-    contextWindow: int
-    maxOutputTokens: int
-    metadata: dict[str, Any] = field(default_factory=dict)
-```
-
-字段说明：
-
-- `id`: 统一模型 ID，例如 `openai:gpt-5`。
-- `provider`: provider 名称，例如 `openai`。
-- `inputPrice`: 输入价格。
-- `outputPrice`: 输出价格。
-- `contextWindow`: 上下文窗口大小。
-- `maxOutputTokens`: 模型最大输出 token 预算。
-- `metadata`: 额外元数据。
-
-对于 `zhipu` 模型，当前价格字段使用占位值 `0.0`，并在 `metadata.priceStatus` 中标记为 `needs_manual_sync`。
-
-### 4.5 StreamEvent
-
-`StreamEvent` 表示统一流式事件对象。
-
-```python
-@dataclass(slots=True)
-class StreamEvent:
-    type: StreamEventType
-    model: Model | None = None
-    provider: str | None = None
-    text: str | None = None
-    thinking: str | None = None
-    toolCallId: str | None = None
-    toolName: str | None = None
-    argumentsDelta: str | None = None
-    arguments: str | None = None
-    assistantMessage: AssistantMessage | None = None
-    usage: dict[str, Any] | None = None
-    stopReason: str | None = None
-    error: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-    rawEvent: Any | None = None
-```
-
-当前支持的事件类型：
-
-- `start`
 - `text_start`
 - `text_delta`
 - `text_end`
@@ -286,463 +164,384 @@ class StreamEvent:
 - `toolcall_start`
 - `toolcall_delta`
 - `toolcall_end`
-- `done`
-- `error`
+- `tool_result`
 
-字段说明：
+`StreamEvent.__post_init__()` 会把这些旧事件名映射成标准 `lifecycle` 和 `itemType`，因此上层既能继续按旧事件类型处理，也能统一按生命周期处理。
 
-- `text`: 文本增量。
-- `thinking`: 思考增量。
-- `toolCallId`: 工具调用 ID。
-- `toolName`: 工具名。
-- `argumentsDelta`: 工具参数增量。
-- `arguments`: 工具参数最终值。
-- `assistantMessage`: `done` 事件中的最终完整消息。
-- `usage`: token 使用量等元数据。
-- `stopReason`: 停止原因。
-- `error`: 错误文本。
-- `rawEvent`: 可选原始 provider 事件。
+## 4. 调用入口与主流程
 
----
+主要入口在 [ai/client.py](/Users/admin/PyCharmProject/LiuClaw/ai/client.py)。
 
-## 5. Options 与 reasoning
+### 4.1 `stream()`
 
-定义位于 [options.py](/Users/admin/PyCharmProject/LiuClaw/ai/options.py)。
+`stream()` 的职责是创建一次流式队列会话。核心流程如下：
 
-### 5.1 Options
+1. 解析 `model`。
+   - 如果传入字符串，就通过 `ModelRegistry.get_model()` 找到运行时模型。
+   - 如果传入的是 `Model`，则直接规范化。
+2. 调用 `_prepare_options()`。
+   - `ensure_options()` 补默认值。
+   - `Model.clamp_reasoning()` 收敛 reasoning。
+   - `merge_reasoning_metadata()` 把厂商专用 reasoning 参数写进 `options.metadata["_providerReasoning"]`。
+   - 如果发生等级钳制，还会记录 `_requestedReasoning` 和 `_clampedReasoning`。
+3. 调用 `_prepare_context()`。
+   - `ensure_context()` 把输入转成统一 `Context`。
+   - `sanitize_unicode_context()` 清洗 Unicode。
+   - `convert_context_for_provider()` 完成 provider 前转换。
+   - 若 `contextOverflowStrategy == "truncate_oldest"`，则调用 `truncate_context_to_window()` 预裁剪旧消息。
+4. 调用 `ensure_context_fits_window()` 做窗口校验。
+5. 创建有界 `asyncio.Queue[StreamEvent]`。
+6. 启动后台任务 `_produce_events()`。
+   - 通过 `ProviderRegistry.resolve()` 找到 provider。
+   - 消费 provider 的 `stream()` 输出。
+   - 按配置把事件放入队列。
+   - 如果 provider 抛异常，则包装成统一 `error` 事件。
+7. 返回 `StreamSession`。
 
-```python
-Options(
-    reasoning="high",
-    temperature=0.2,
-    maxTokens=4096,
-    metadata={},
-    timeout=30,
-    includeRawProviderEvents=False,
-    streamQueueMaxSize=64,
-    streamPutTimeout=None,
-)
-```
+### 4.2 `complete()`
 
-字段说明：
+`complete()` 并不直接走另一套逻辑，而是：
 
-- `reasoning`: 统一 reasoning 等级，支持 `low`、`medium`、`high`，也支持 `ReasoningConfig`。
-- `temperature`: 温度参数。
-- `maxTokens`: 期望最大输出 token 数。
-- `metadata`: 附加元数据，也用于传递 provider 专用 reasoning 映射结果。
-- `timeout`: 请求超时。
-- `includeRawProviderEvents`: 是否保留原始 provider 事件到 `rawEvent`。
-- `streamQueueMaxSize`: 流式队列最大长度。
-- `streamPutTimeout`: producer 写队列超时。
+1. 先调用 `stream()` 创建 `StreamSession`。
+2. 用 `StreamAccumulator` 消费 `session.consume()`。
+3. 遇到 `done` 时返回最终 `AssistantMessage`。
+4. 遇到 `error` 时抛出 `ProviderResponseError`。
+5. 在 `finally` 中关闭会话，确保后台 producer 结束。
 
-### 5.2 ReasoningConfig
+这也是当前实现的一个重要特点：非流式接口其实是流式接口的聚合包装，因此两者的行为基线一致。
 
-```python
-ReasoningConfig(effort="medium")
-```
+### 4.3 `StreamSession`
 
-本质上是对 `low/medium/high` 的结构化封装。
+[ai/session.py](/Users/admin/PyCharmProject/LiuClaw/ai/session.py) 中的 `StreamSession` 封装了：
 
-### 5.3 reasoning 映射规则
+- `model`
+- `queue`
+- `producer_task`
 
-映射逻辑位于 [reasoning.py](/Users/admin/PyCharmProject/LiuClaw/ai/reasoning.py)。
+它提供三个核心方法：
 
-当前规则如下：
+- `consume()`：持续从队列取事件，收到 `done/error` 后结束
+- `close()`：取消 producer 并等待结束
+- `wait_closed()`：等待 producer 自然结束
 
-#### OpenAI
+默认停止条件由 `_default_should_stop()` 决定，即 `event.type in {"done", "error"}`。
 
-- `low -> {"reasoning": {"effort": "low"}}`
-- `medium -> {"reasoning": {"effort": "medium"}}`
-- `high -> {"reasoning": {"effort": "high"}}`
+## 5. 配置、模型目录与注册表
 
-#### Anthropic
+## 5.1 静态模型目录
 
-- `low -> thinking budget 1024`
-- `medium -> thinking budget 4096`
-- `high -> thinking budget 8192`
-
-#### Zhipu
-
-- `low -> {"thinking": {"type": "disabled"}}`
-- `medium -> {"thinking": {"type": "enabled"}}`
-- `high -> glm-4.6` 降级为 `{"thinking": {"type": "enabled"}}`
-- `high -> 其他 zhipu 模型` 为 `{"thinking": {"type": "enabled"}, "clear_thinking": False}`
-
-`client` 会把上述映射结果写入 `options.metadata["_providerReasoning"]`，provider 再从这里读取。
-
----
-
-## 6. 模型目录
-
-模型目录定义位于 [models.py](/Users/admin/PyCharmProject/LiuClaw/ai/models.py)。
-
-### 6.1 查询函数
-
-- `get_model(model_id)`
-- `list_models(provider=None)`
-
-### 6.2 当前内置模型
-
-#### OpenAI
+[ai/models.py](/Users/admin/PyCharmProject/LiuClaw/ai/models.py) 内置了一组模型定义，目前包括：
 
 - `openai:gpt-5`
 - `openai:gpt-5-mini`
-
-#### Anthropic
-
 - `anthropic:claude-sonnet-4`
 - `anthropic:claude-haiku-3-5`
-
-#### Zhipu
-
 - `zhipu:glm-5`
 - `zhipu:glm-5-turbo`
 - `zhipu:glm-4.7`
 - `zhipu:glm-4.6`
 
----
+`get_model()` 和 `list_models()` 实际上都委托给默认的 `DEFAULT_MODEL_REGISTRY`，因此它们返回的是“应用过本地配置覆盖后的运行时模型”，而不是硬编码原始副本。
 
-## 7. 对外调用方式
+## 5.2 `AIConfig` 与本地配置文件
 
-统一入口位于 [client.py](/Users/admin/PyCharmProject/LiuClaw/ai/client.py)。
+[ai/config.py](/Users/admin/PyCharmProject/LiuClaw/ai/config.py) 定义：
 
-### 7.1 stream()
+- `ProviderConfig`
+- `AIConfig`
+- `load_ai_config()`
 
-```python
-async def stream(
-    model: Model | str,
-    context: Context | dict[str, Any],
-    options: Options | None = None,
-    *,
-    registry: ProviderRegistry | None = None,
-) -> StreamSession
-```
+配置文件查找顺序如下：
 
-作用：
+1. 调用方显式传入的 `config_path`
+2. 环境变量 `AI_CONFIG_FILE`
+3. 当前目录下的 `ai.config.json`
 
-- 创建一个流式队列会话 `StreamSession`
-- 启动后台 producer task
-- provider 产出的统一事件会被持续放入队列
+如果都不存在，则返回空配置。
 
-### 7.2 complete()
+`ProviderConfig` 不只是 API 地址和 key，还包含：
 
-```python
-async def complete(...) -> AssistantMessage
-```
+- `headers`
+- `providerOverrides`
+- `modelOverrides`
+- `capabilities`
+- `sdk`
 
-作用：
+`resolve_api_key()` 会优先使用显式 `apiKey`，否则从 `apiKeyEnv` 指向的环境变量读取。
 
-- 内部先调用 `stream()`
-- 再持续消费 `StreamSession` 中的事件
-- 使用 `StreamAccumulator` 聚合最终 `AssistantMessage`
+## 5.3 `ModelRegistry`
 
-### 7.3 streamSimple()
+[ai/model_registry.py](/Users/admin/PyCharmProject/LiuClaw/ai/model_registry.py) 负责管理模型目录和 provider 配置。
 
-简化版流式入口，适合只关心常用参数的场景。
+主要职责：
 
-常用参数包括：
+- 以 `_MODEL_CATALOG` 为基础构建运行时模型目录。
+- 合并本地 `AIConfig`。
+- 返回已经应用 provider/model override 的 `Model`。
+- 维护 provider 配置表。
 
-- `model`
-- `context`
-- `reasoning`
-- `temperature`
-- `max_tokens`
-- `timeout`
+`get_model()` 是最关键的方法。它会：
 
-### 7.4 completeSimple()
+1. 先按模型 ID 取出基础模型。
+2. 查找同名 provider 的 `ProviderConfig`。
+3. 如果存在配置，则调用 `_apply_provider_config()` 叠加：
+   - `baseUrl`
+   - `apiKeyEnv`
+   - `headers`
+   - `providerOverrides`
+   - `modelOverrides`
+   - `capabilities`
 
-简化版一次性调用入口。
+测试 [tests/test_model_registry.py](/Users/admin/PyCharmProject/LiuClaw/tests/test_model_registry.py) 验证了：
 
----
+- provider 配置中的 `baseUrl`、`apiKeyEnv`、`headers` 会写入 `model.providerConfig`
+- `capabilities` 能直接影响模型能力，例如把 `supports_images` 置为 `True`
+- `load_ai_config()` 能从 `ai.config.json` 正确加载 provider 和模型定义
 
-## 8. StreamSession 队列会话模型
+## 5.4 `ProviderRegistry`
 
-定义位于 [session.py](/Users/admin/PyCharmProject/LiuClaw/ai/session.py)。
+[ai/registry.py](/Users/admin/PyCharmProject/LiuClaw/ai/registry.py) 负责 provider 工厂和实例缓存。
 
-`StreamSession` 是上层消费流式事件的核心对象。
+它维护三类状态：
 
-```python
-session = await stream(...)
-```
+- `_factories`：provider 工厂映射
+- `_instances`：已经实例化的 provider
+- `_provider_configs`：provider 级配置
 
-其内部包含：
+默认工厂由 `_default_factories()` 提供，包含：
 
-- `model`: 当前模型对象
-- `queue`: 事件队列
-- `producer_task`: 后台生产任务
+- `openai`
+- `openai_compatible`
+- `anthropic`
+- `zhipu`
 
-### 8.1 主要方法
+`resolve()` 最终走 `get_provider()`，解析逻辑是：
 
-#### consume()
+1. 如果 `model.provider` 已明确，优先按名称拿 provider。
+2. 否则如果模型 ID 形如 `provider:model-name`，按前缀推断 provider。
+3. 再不行就遍历全部 provider，看谁的 `supports()` 返回真。
 
-持续从队列取出事件，直到遇到 `done` 或 `error`。
+`ProviderRegistry` 采用懒实例化策略。测试 [tests/test_registry.py](/Users/admin/PyCharmProject/LiuClaw/tests/test_registry.py) 验证了：
 
-```python
-async for event in session.consume():
-    ...
-```
+- 工厂不会在注册时立即执行
+- 首次 `resolve()` 才会创建实例
+- 同一 provider 会复用缓存实例
+- 未知 provider 会抛 `ProviderNotFoundError`
 
-#### close()
+测试 [tests/test_registry_config.py](/Users/admin/PyCharmProject/LiuClaw/tests/test_registry_config.py) 还验证了：如果工厂构造器支持 `config=` 参数，注册表会在实例化时直接注入 `ProviderConfig`。
 
-取消 producer task，并等待它结束。
+## 6. Provider 适配层
 
-#### wait_closed()
-
-等待 producer 自然结束。
-
-### 8.2 为什么采用队列会话模型
-
-当前设计中：
-
-- provider 仍保持 `async iterator` 输出统一事件
-- client 负责桥接为队列
-- 上层通过 `StreamSession` 消费
-
-这样做的优点是：
-
-- provider 职责更单一
-- 队列背压逻辑集中在 client/session 层
-- provider 更容易测试
-- 未来若要支持非队列消费模式，不必重写 provider
-
----
-
-## 9. 一次请求的完整运行流程
-
-当上层调用：
-
-```python
-await stream(model, context, options)
-```
-
-内部流程如下：
-
-1. 规范化模型
-   - `ensure_model()` 把字符串模型 ID 转成 `Model`。
-
-2. 规范化 options
-   - `ensure_options()` 保证得到有效 `Options`。
-   - `merge_reasoning_metadata()` 把统一 reasoning 映射为 provider 专用参数。
-
-3. 规范化上下文
-   - `ensure_context()` 把输入变成统一 `Context`。
-   - `sanitize_unicode_context()` 清理危险 Unicode 字符。
-   - `convert_context_for_provider()` 做跨 provider 兼容转换。
-
-4. 检查上下文窗口
-   - `ensure_context_fits_window()` 做粗略 token 估算和溢出检查。
-
-5. 解析 provider
-   - 通过 `ProviderRegistry.resolve()` 按 provider 名或模型前缀找到目标 provider。
-   - 注册表支持懒加载和实例缓存。
-
-6. 启动 producer
-   - client 创建后台 task。
-   - producer 从 provider 的 `async iterator` 读取统一事件。
-   - 事件持续写入有界队列。
-
-7. 上层消费事件
-   - 上层从 `StreamSession.consume()` 读取事件。
-   - 或者 `complete()` 在内部消费并聚合。
-
-可以用一条链表示：
-
-```text
-上层业务
-  -> ai.stream() / ai.complete()
-  -> client
-  -> reasoning / converters / unicode / context_window
-  -> registry
-  -> provider
-  -> StreamEvent
-  -> StreamSession.queue
-  -> 上层消费或 complete() 聚合
-```
-
----
-
-## 10. Provider 注册与懒加载
-
-注册中心位于 [registry.py](/Users/admin/PyCharmProject/LiuClaw/ai/registry.py)。
-
-### 10.1 当前默认工厂
-
-- `openai -> OpenAIProvider`
-- `anthropic -> AnthropicProvider`
-- `zhipu -> ZhipuProvider`
-
-### 10.2 ProviderRegistry 特性
-
-- 支持已构造实例注册 `register(provider)`
-- 支持工厂注册 `register_factory(name, factory)`
-- 支持首次 `resolve()` 时懒加载 provider
-- 同一 provider 会缓存复用
-
-### 10.3 路由规则
-
-优先顺序如下：
-
-1. 使用 `Model.provider`
-2. 如果模型 ID 是 `provider:model_name` 格式，则按前缀取 provider
-3. 如果没有 provider 信息，则遍历所有 provider 调用 `supports()` 判断
-
----
-
-## 11. Provider 抽象与各厂商适配
-
-抽象接口位于 [base.py](/Users/admin/PyCharmProject/LiuClaw/ai/providers/base.py)。
-
-所有 provider 需要实现：
+所有 provider 都继承 [ai/providers/base.py](/Users/admin/PyCharmProject/LiuClaw/ai/providers/base.py) 中的 `Provider` 抽象类，只要求实现两个接口：
 
 - `supports(model)`
 - `stream(model, context, options)`
 
-### 11.1 OpenAIProvider
+这意味着 provider 层只需要处理“是否支持”和“如何把厂商流映射成统一流”，不需要关心上层队列会话、上下文裁剪和最终聚合。
 
-文件： [openai.py](/Users/admin/PyCharmProject/LiuClaw/ai/providers/openai.py)
+## 6.1 OpenAIProvider
 
-职责：
+[ai/providers/openai.py](/Users/admin/PyCharmProject/LiuClaw/ai/providers/openai.py) 适配 OpenAI Responses API。
 
-- 读取 `OPENAI_API_KEY`
-- 把统一 `Context` 映射为 OpenAI Responses API 请求
-- 把 OpenAI 流式事件映射为统一 `StreamEvent`
+关键点：
 
-主要映射：
+- `supports()` 支持显式 `provider == "openai"`，也兼容模型名前缀 `openai:`、`gpt-`、`o`
+- `_runtime_model_name()` 会把 `openai:gpt-5` 转成实际请求模型名 `gpt-5`
+- `_client_kwargs()` 使用 `ProviderConfig.baseUrl` 或环境变量 `OPENAI_BASE_URL`
+- API key 优先来自 `ProviderConfig.resolve_api_key()`，其次读取 `OPENAI_API_KEY`
+- `_build_request()` 使用 `input` 字段组织系统提示和历史消息，工具定义映射为 Responses API 的 `tools`
+- `options.metadata["_providerReasoning"]` 会直接写入请求体
 
-- `response.output_text.delta -> text_delta`
-- `response.reasoning_text.delta -> thinking_delta`
-- `response.function_call_arguments.delta -> toolcall_delta`
-- `response.function_call_arguments.done -> toolcall_end`
+流式事件映射方面：
 
-### 11.2 AnthropicProvider
+- `response.output_text.delta` -> `text_delta`
+- `response.reasoning_text.delta` / `response.reasoning_summary_text.delta` -> `thinking_delta`
+- `response.function_call_arguments.delta` -> `toolcall_delta`
+- `response.function_call_arguments.done` -> `toolcall_end`
 
-文件： [anthropic.py](/Users/admin/PyCharmProject/LiuClaw/ai/providers/anthropic.py)
+最终通过 `create_done_event()` 产出统一 `done` 事件，并把原始最终响应对象塞进 `final_message.metadata["response"]`。
 
-职责：
+`OpenAICompatibleProvider` 只是复用 `OpenAIProvider`，把 `name` 改成 `openai_compatible`，并放宽模型前缀识别。
 
-- 读取 `ANTHROPIC_API_KEY`
-- 把统一消息与工具映射到 Anthropic Messages API
-- 把内容块流映射到统一流式事件
+## 6.2 AnthropicProvider
 
-主要映射：
+[ai/providers/anthropic.py](/Users/admin/PyCharmProject/LiuClaw/ai/providers/anthropic.py) 适配 Anthropic Messages API。
 
-- `content_block_start(text) -> text_start`
-- `text_delta -> text_delta`
-- `thinking_delta -> thinking_delta`
-- `input_json_delta -> toolcall_delta`
-- `content_block_stop(tool_use) -> toolcall_end`
+关键点：
 
-### 11.3 ZhipuProvider
+- `_build_request()` 使用 `messages` 和可选 `system`
+- 默认 `max_tokens` 取 `options.maxTokens`，否则退回 `model.maxOutputTokens`
+- 工具定义映射为 `tools: [{name, description, input_schema}]`
+- 工具结果消息映射为 `role="user"` 且 `content=[{type: "tool_result", ...}]`
+- assistant 历史工具调用会映射成 `tool_use`
 
-文件： [zhipu.py](/Users/admin/PyCharmProject/LiuClaw/ai/providers/zhipu.py)
+流式阶段主要处理这些事件：
 
-职责：
+- `content_block_start`
+- `content_block_delta`
+- `content_block_stop`
 
-- 读取智谱 API Key
-- 调用智谱 `chat/completions`
-- 解析 SSE 响应
-- 把 `reasoning_content`、`content`、`tool_calls` 映射为统一事件
+其中：
 
-当前支持的认证环境变量：
+- `text_delta` 映射为统一文本事件
+- `thinking_delta` 映射为统一思考事件
+- `input_json_delta` 用来增量拼接工具参数
 
-- `ZHIPU_API_KEY`
-- `ZHIPUAI_API_KEY`
+块结束时，如果该块是工具调用块，会补 `toolcall_end`；如果是 thinking 或 text 块，则分别补 `thinking_end` 或 `text_end`。
 
-可选地址：
+## 6.3 ZhipuProvider
 
-- `ZHIPU_BASE_URL`
+[ai/providers/zhipu.py](/Users/admin/PyCharmProject/LiuClaw/ai/providers/zhipu.py) 适配智谱的 SSE 风格 `chat/completions` 接口，是当前三家里实现差异最大的一家。
 
-主要映射：
+关键点：
 
-- `delta.reasoning_content -> thinking_delta`
-- `delta.content -> text_delta`
-- `delta.tool_calls -> toolcall_delta`
-- 流结束后聚合为 `done`
+- 默认基地址是 `https://open.bigmodel.cn/api/paas/v4`
+- 会从 `ProviderConfig.baseUrl` 或环境变量 `ZHIPU_BASE_URL` 覆盖
+- API key 读取顺序是 `ProviderConfig` -> `ZHIPU_API_KEY` -> `ZHIPUAI_API_KEY`
+- 请求头由 `_headers()` 手工构造，不依赖厂商 SDK
+- `_iter_sse_chunks()` 使用 `httpx.AsyncClient.stream()` 逐行消费 SSE，并手工解析 `data:` 负载
 
-当前实现说明：
+消息映射方面有两个智谱特有点：
 
-- `glm-4.6` 和 `glm-4.7` 在带工具时会默认带上 `tool_stream=True`
-- `zhipu` 的价格元数据尚未同步正式价格
+1. assistant 历史 thinking 会写入 `reasoning_content`
+2. 对 `glm-4.6` 和 `glm-4.7`，如果请求里包含工具，还会追加 `tool_stream=True`
 
----
+流式输出时：
 
-## 12. 跨 Provider 转换层
+- `delta.reasoning_content` -> thinking 事件
+- `delta.content` -> text 事件
+- `delta.tool_calls[*].function.arguments` -> 工具参数增量
 
-文件：
+当 `finish_reason` 变成 `tool_calls`、`stop` 或 `length` 时，provider 会把尚未收尾的工具调用统一补成 `toolcall_end`，然后在最终 `done` 事件中附带：
 
-- [messages.py](/Users/admin/PyCharmProject/LiuClaw/ai/converters/messages.py)
-- [tools.py](/Users/admin/PyCharmProject/LiuClaw/ai/converters/tools.py)
+- `usage`
+- `responseId`
+- `providerMetadata["request_model"]`
 
-### 12.1 作用
+测试 [tests/test_zhipu_provider.py](/Users/admin/PyCharmProject/LiuClaw/tests/test_zhipu_provider.py) 覆盖了两件关键事情：
 
-当目标 provider 和历史消息原始来源不一致时，统一层会在进入 provider 之前做一次语义兼容转换。
+- `_build_request()` 会正确映射 system prompt、assistant thinking、tool results、工具定义和 reasoning 配置
+- `stream()` 会正确产出 thinking、tool call、text 和最终 `done` 事件，并把工具参数字符串解析成结构化对象
 
-当前覆盖范围：
+## 7. 转换层
 
-- `Context.messages`
-- `Context.tools`
+转换入口在 [ai/converters/messages.py](/Users/admin/PyCharmProject/LiuClaw/ai/converters/messages.py) 的 `convert_context_for_provider()`。
 
-### 12.2 消息转换原则
+它的处理顺序很明确：
 
-- `UserMessage` 直接复制
-- `ToolResultMessage` 补充 `metadata.targetProvider`
-- `AssistantMessage` 补充 `metadata.targetProvider`
-- 对带 `thinking` 的历史 assistant 消息，额外记录 `metadata.historicalThinking`
+1. `ensure_context()` 规范化
+2. `apply_model_capabilities()` 根据模型能力裁剪
+3. `convert_thinking_for_provider()` 处理 thinking 兼容
+4. `convert_messages_for_provider()` 转历史消息
+5. `convert_tools_for_provider()` 转工具定义
 
-### 12.3 工具转换原则
+最终返回的仍然是统一 `Context`，只是其中消息和工具的元数据更接近目标 provider 所需格式。
 
-- 输出统一工具字典
-- 保留 `name`、`description`、`inputSchema`
-- 在 `metadata` 中记录 `targetProvider`
-- 默认标记 `schemaDialect=jsonschema`
+## 7.1 能力裁剪
 
----
+[ai/converters/capabilities.py](/Users/admin/PyCharmProject/LiuClaw/ai/converters/capabilities.py) 当前重点处理图片能力。
 
-## 13. utils 子模块说明
+如果模型 `supports_images=False`，则图片块不会直接保留，而是替换成文本：
 
-### 13.1 streaming.py
+`[image omitted by capability clamp]`
 
-文件： [streaming.py](/Users/admin/PyCharmProject/LiuClaw/ai/utils/streaming.py)
+这一行为有测试覆盖，见 [tests/test_model_registry.py](/Users/admin/PyCharmProject/LiuClaw/tests/test_model_registry.py)。
 
-提供能力：
+## 7.2 Thinking 兼容
 
-- `EventBuilder`: 快速构造统一流式事件。
-- `StreamAccumulator`: 聚合 `text_delta`、`thinking_delta`、`toolcall_*`，最终得到 `AssistantMessage`。
-- `create_event_queue()`: 创建有界队列。
-- `enqueue_event()`: 队列写入。
-- `consume_queue()`: 队列消费。
-- `drain_queue_to_accumulator()`: 从队列直接聚合最终消息。
-- `forward_stream_to_queue()`: 把 provider 事件流桥接到队列。
-- `finalize_producer_error()`: producer 出错时向队列补发 `error` 事件。
-- `cancel_producer_task()`: 取消 producer 并做错误收尾。
-- `create_done_event()`: 构造统一 `done` 事件。
+[ai/converters/thinking.py](/Users/admin/PyCharmProject/LiuClaw/ai/converters/thinking.py) 不直接删除历史 thinking，而是把 assistant 消息里的思考文本额外写入 `metadata["historicalThinking"]`，方便目标 provider 或上层调试逻辑读取。
 
-### 13.2 context_window.py
+## 7.3 消息与工具转换
 
-文件： [context_window.py](/Users/admin/PyCharmProject/LiuClaw/ai/utils/context_window.py)
+[ai/converters/messages.py](/Users/admin/PyCharmProject/LiuClaw/ai/converters/messages.py) 和 [ai/converters/tools.py](/Users/admin/PyCharmProject/LiuClaw/ai/converters/tools.py) 本身转换得比较保守：
 
-提供能力：
+- 不会把消息转成厂商原始 JSON
+- 而是复制统一对象，并通过 `metadata["targetProvider"]` 标记目标 provider
+- 工具定义默认补 `metadata["schemaDialect"] = "jsonschema"`
 
-- `estimate_context_tokens(context)`: 粗略估算 token。
-- `detect_context_overflow(model, context, options)`: 返回窗口检测报告。
-- `ensure_context_fits_window(...)`: 溢出时抛错。
+这种设计说明：真正的“最后一跳厂商请求构造”仍然留在 provider 文件里，converter 层主要负责统一对象的轻量兼容和能力约束。
 
-当前策略：
+测试 [tests/test_converters.py](/Users/admin/PyCharmProject/LiuClaw/tests/test_converters.py) 验证了：
 
-- 只检测并报错
-- 不自动裁剪上下文
+- 历史消息在跨 provider 转换中不会丢失
+- 工具 schema 会被保留
 
-### 13.3 schema_validation.py
+## 8. Reasoning 映射
 
-文件： [schema_validation.py](/Users/admin/PyCharmProject/LiuClaw/ai/utils/schema_validation.py)
+[ai/reasoning.py](/Users/admin/PyCharmProject/LiuClaw/ai/reasoning.py) 把统一 reasoning 等级映射到各 provider 自己的参数格式。
 
-提供能力：
+统一等级定义在 `types.py`：
 
-- `validate_tool_arguments(tool, arguments)`
+- `off`
+- `minimal`
+- `low`
+- `medium`
+- `high`
+- `xhigh`
 
-当前实现是 Python 内部的 JSON Schema 等价校验，不依赖 Node/AJV 运行时。
+当前映射规则如下：
 
-当前覆盖的 schema 类型包括：
+### 8.1 OpenAI
+
+- `off` -> 不附加 reasoning 参数
+- 其他等级 -> `{"reasoning": {"effort": level}}`
+
+### 8.2 Anthropic
+
+- `off` / `minimal` -> 不启用 thinking
+- `low` -> `budget_tokens = 1024`
+- `medium` -> `budget_tokens = 4096`
+- `high` -> `budget_tokens = 8192`
+- `xhigh` -> `budget_tokens = 16384`
+
+### 8.3 Zhipu
+
+- `off` / `minimal` / `low` -> `{"thinking": {"type": "disabled"}}`
+- `medium` -> `{"thinking": {"type": "enabled"}}`
+- `high` / `xhigh`
+  - 如果模型是 `glm-4.6` -> `{"thinking": {"type": "enabled"}}`
+  - 其他模型 -> `{"thinking": {"type": "enabled"}, "clear_thinking": False}`
+
+`merge_reasoning_metadata()` 会把映射结果写到 `Options.metadata["_providerReasoning"]`。provider 自己只负责读取这个结果，不重复做一遍映射。
+
+测试 [tests/test_reasoning.py](/Users/admin/PyCharmProject/LiuClaw/tests/test_reasoning.py) 对这几类映射都有覆盖。
+
+## 9. 工具类与通用基础设施
+
+## 9.1 上下文窗口检测
+
+[ai/utils/context_window.py](/Users/admin/PyCharmProject/LiuClaw/ai/utils/context_window.py) 提供：
+
+- `estimate_context_tokens()`
+- `detect_context_overflow()`
+- `ensure_context_fits_window()`
+- `truncate_context_to_window()`
+
+实现不是 tokenizer 级精确计数，而是保守估算：
+
+- 文本按 `max(1, (len(text) + 2) // 3)` 估算
+- 消息、工具定义、工具参数、图片元数据都会参与预算
+
+如果配置 `Options.contextOverflowStrategy == "truncate_oldest"`，则会不断删除最旧消息，直到预算重新落回窗口。
+
+测试验证了“按最旧优先裁剪消息”的行为。
+
+## 9.2 Unicode 清理
+
+[ai/utils/unicode.py](/Users/admin/PyCharmProject/LiuClaw/ai/utils/unicode.py) 在进入 provider 之前对上下文做 NFKC 规范化，并移除危险控制字符。
+
+它会清理：
+
+- `systemPrompt`
+- 各类消息里的文本字段
+- `Tool`
+- `ToolCall`
+
+测试 [tests/test_utils.py](/Users/admin/PyCharmProject/LiuClaw/tests/test_utils.py) 验证了零宽字符会被移除。
+
+## 9.3 工具参数校验
+
+[ai/utils/schema_validation.py](/Users/admin/PyCharmProject/LiuClaw/ai/utils/schema_validation.py) 实现了一个简化版 JSON Schema 校验器，当前支持：
 
 - `object`
 - `array`
@@ -752,242 +551,114 @@ await stream(model, context, options)
 - `boolean`
 - `null`
 
-### 13.4 unicode.py
+同时支持：
 
-文件： [unicode.py](/Users/admin/PyCharmProject/LiuClaw/ai/utils/unicode.py)
+- `required`
+- `additionalProperties`
+- `minItems` / `maxItems`
+- `minLength` / `maxLength`
+- `enum`
+- `minimum` / `maximum`
 
-提供能力：
+这部分目前是同步校验逻辑，定位是工具调用前的轻量参数守卫。
 
-- `sanitize_unicode(text)`
-- `sanitize_unicode_context(context)`
+## 9.4 流式辅助
 
-处理原则：
+[ai/utils/streaming.py](/Users/admin/PyCharmProject/LiuClaw/ai/utils/streaming.py) 提供了一组与 provider 无关的流式工具：
 
-- 使用 `NFKC` 做 Unicode 规范化
-- 去掉危险控制字符和零宽控制类字符
-- 保留 `\n`、`\r`、`\t`
+- `EventBuilder`
+- `StreamAccumulator`
+- `create_event_queue()`
+- `enqueue_event()`
+- `consume_queue()`
+- `drain_queue_to_accumulator()`
+- `forward_stream_to_queue()`
+- `finalize_producer_error()`
+- `cancel_producer_task()`
+- `create_done_event()`
 
----
+其中最重要的是两个类：
 
-## 14. 错误体系
+### `EventBuilder`
 
-异常定义位于 [errors.py](/Users/admin/PyCharmProject/LiuClaw/ai/errors.py)。
+负责快速构造统一 `StreamEvent`，自动填充模型和 provider 默认值，还能通过 `build_error()` 统一生成错误事件。
 
-### 14.1 AIError
+### `StreamAccumulator`
 
-统一基类。
+负责把一串 `StreamEvent` 聚合成 `AssistantMessage`：
 
-### 14.2 ProviderNotFoundError
+- 文本增量会追加成 `TextContent`
+- thinking 增量会追加成 `ThinkingContent`
+- 工具调用会先建占位，再逐步拼接参数
+- 收到 `done` 时，如果事件里已经带完整 `assistantMessage`，则直接以该消息为准
 
-当模型找不到可用 provider 时抛出。
+也正因为有这层，`complete()` 才能复用 `stream()` 的结果，而不用每个 provider 各自实现一套“非流式完整返回”逻辑。
 
-### 14.3 AuthenticationError
+## 10. 错误模型
 
-当 provider API Key 缺失或无效时抛出。
+[ai/errors.py](/Users/admin/PyCharmProject/LiuClaw/ai/errors.py) 定义了统一错误体系：
 
-### 14.4 UnsupportedFeatureError
+- `AIError`
+- `ProviderNotFoundError`
+- `AuthenticationError`
+- `UnsupportedFeatureError`
+- `ProviderResponseError`
 
-当某 provider 不支持特定功能，例如 reasoning 映射时抛出。
+这些错误在模块里的职责边界比较明确：
 
-### 14.5 ProviderResponseError
+- 找不到 provider 或模型映射异常时，用 `ProviderNotFoundError`
+- 缺少 API key 或认证失败时，用 `AuthenticationError`
+- 某 provider 无法支持某能力映射时，用 `UnsupportedFeatureError`
+- provider 返回格式错误、SDK 异常或流式处理失败时，用 `ProviderResponseError`
 
-当 provider SDK 调用失败、协议不合法、流式解析失败时抛出。
+需要注意的是，provider 层多数时候不会直接把异常抛到上层，而是先转成统一 `error` 事件；最终 `complete()` 在消费到 `error` 事件时，再抛出 `ProviderResponseError`。
 
----
+## 11. 测试反映出的设计重点
 
-## 15. 常见调用示例
+从 `tests/` 里的相关用例可以看到，这个模块当前最看重以下能力：
 
-### 15.1 一次性调用
+### 11.1 流式协议稳定
 
-```python
-from ai import Context, UserMessage, complete
+[tests/test_client.py](/Users/admin/PyCharmProject/LiuClaw/tests/test_client.py) 验证了：
 
-message = await complete(
-    model="openai:gpt-5",
-    context=Context(
-        systemPrompt="你是一个可靠的助手",
-        messages=[UserMessage(content="请总结下面内容")],
-        tools=[],
-    ),
-)
+- `stream()` 返回的是带队列和后台任务的 `StreamSession`
+- `complete()` 能正确从流式事件聚合出最终消息
+- provider 发出 `error` 事件时，上层能感知失败
+- 简化接口 `streamSimple()` 会正确构造 `Options`
+- reasoning 会按模型能力自动钳制
 
-print(message.content)
-```
+### 11.2 注册与配置可扩展
 
-### 15.2 流式调用
+[tests/test_registry.py](/Users/admin/PyCharmProject/LiuClaw/tests/test_registry.py)、[tests/test_registry_config.py](/Users/admin/PyCharmProject/LiuClaw/tests/test_registry_config.py)、[tests/test_model_registry.py](/Users/admin/PyCharmProject/LiuClaw/tests/test_model_registry.py) 验证了：
 
-```python
-from ai import Context, UserMessage, stream
+- provider 是懒加载的
+- provider 配置可以从注册表注入
+- 模型定义和 provider 配置可以通过本地文件覆盖
 
-session = await stream(
-    model="anthropic:claude-sonnet-4",
-    context=Context(
-        systemPrompt="你是一个可靠的助手",
-        messages=[UserMessage(content="帮我写一个 Python 函数")],
-        tools=[],
-    ),
-)
+### 11.3 兼容多 provider 的中间层设计
 
-async for event in session.consume():
-    if event.type == "text_delta" and event.text:
-        print(event.text, end="")
-    if event.type in {"done", "error"}:
-        break
-```
+[tests/test_converters.py](/Users/admin/PyCharmProject/LiuClaw/tests/test_converters.py)、[tests/test_zhipu_provider.py](/Users/admin/PyCharmProject/LiuClaw/tests/test_zhipu_provider.py)、[tests/test_reasoning.py](/Users/admin/PyCharmProject/LiuClaw/tests/test_reasoning.py) 表明：
 
-### 15.3 带工具调用
+- 历史消息不能在转换中丢失
+- 工具 schema 需要保留
+- thinking 要能跨 provider 传递
+- 不同厂商的 reasoning 参数必须在统一层完成收敛
 
-```python
-from ai import Context, Tool, UserMessage, complete
-from ai.options import Options
+## 12. 一次完整调用的真实链路
 
-message = await complete(
-    model="zhipu:glm-4.7",
-    context=Context(
-        systemPrompt="你是一个可以调用工具的助手",
-        messages=[UserMessage(content="帮我查一下上海天气")],
-        tools=[
-            Tool(
-                name="lookup_weather",
-                description="查询城市天气",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "city": {"type": "string"}
-                    },
-                    "required": ["city"],
-                },
-            )
-        ],
-    ),
-    options=Options(reasoning="high"),
-)
+把代码串起来，一次 `await complete(model, context, options)` 的实际链路如下：
 
-for tool_call in message.toolCalls:
-    print(tool_call.name, tool_call.arguments)
-```
-
----
-
-## 16. 上层接入建议
-
-如果这个模块用于上层业务系统，建议采用以下接入方式：
-
-### 16.1 统一由业务层组装 Context
-
-业务层只负责：
-
-- 组装 `systemPrompt`
-- 组装 `messages`
-- 注入当前可用 `tools`
-
-### 16.2 流式场景统一消费 StreamSession
-
-推荐流程：
-
-1. 调 `stream()`
-2. 监听 `text_delta`，推送到前端
-3. 监听 `toolcall_*`，做工具执行编排
-4. 遇到 `done` 取最终 `assistantMessage`
-5. 遇到 `error` 做统一错误处理
-
-### 16.3 一次性场景统一走 complete()
-
-如果不需要逐步消费事件，直接用 `complete()` 即可。
-
-### 16.4 不要让业务层直接依赖 provider SDK
-
-业务层应只依赖：
-
-- `Context`
-- `Message` 类型族
-- `Tool`
-- `Options`
-- `StreamSession`
-- `StreamEvent`
-
-不要直接依赖：
-
-- OpenAI 原始事件名
-- Anthropic 原始 block 类型
-- Zhipu 原始 SSE chunk 结构
-
----
-
-## 17. 扩展新 Provider 的方式
-
-新增 provider 时，建议按下面步骤实现：
-
-1. 新建 `ai/providers/<provider>.py`
-2. 继承 `Provider`
-3. 实现 `supports()` 和 `stream()`
-4. 在 `registry._default_factories()` 注册默认工厂
-5. 在 `models.py` 中加入内置模型目录
-6. 在 `reasoning.py` 中补充该 provider 的 reasoning 映射
-7. 如有需要，在 `converters/` 中补充兼容转换
-8. 为新 provider 增加协议级测试
-
-实现边界建议保持如下：
-
-- provider 负责请求装配和事件映射
-- client 负责队列桥接和最终聚合
-- utils 负责可复用基础设施
-- registry 负责实例化和路由
-
----
-
-## 18. 当前实现边界与注意事项
-
-### 18.1 当前支持重点
-
-当前版本优先支持：
-
-- 文本消息
-- thinking / reasoning
-- function tool calling
-- 流式统一事件
-- 队列式消费
-
-### 18.2 当前未重点覆盖
-
-当前版本未优先实现：
-
-- 图片、音频、文件上传等多模态能力
-- sync 风格公共接口
-- provider 专属高级工具类型统一抽象
-- 自动上下文裁剪
-
-### 18.3 关于 zhipu 价格字段
-
-`zhipu` 相关模型目前只完成了功能接入，价格字段尚未完成正式同步，因此：
-
-- `inputPrice = 0.0`
-- `outputPrice = 0.0`
-- `metadata.priceStatus = "needs_manual_sync"`
-
-如果上层需要基于价格做计费或路由，需要先补正式价格数据。
-
----
-
-## 19. 总结
-
-`ai` 模块当前已经形成一套相对完整的统一接入层：
-
-- 上层通过 `Context + Model + Options` 发起调用
-- provider 差异通过适配层吸收
-- 流式协议通过 `StreamEvent` 统一
-- 流式消费通过 `StreamSession` 队列模型统一
-- 一次性调用通过 `complete()` 聚合同一条流式链路
-- reasoning、消息兼容、工具 schema、上下文窗口、Unicode 清理均有独立基础设施支撑
-
-对于上层系统来说，接入这个模块后，基本只需要理解以下几个核心对象：
-
-- `Context`
-- `UserMessage / AssistantMessage / ToolResultMessage`
-- `Tool`
-- `Model`
-- `Options`
-- `StreamSession`
-- `StreamEvent`
-
-这也是当前 `ai` 模块最核心的设计目标。
+1. 上层传入模型 ID 或 `Model`、统一 `Context` 和 `Options`。
+2. `client.complete()` 调用 `client.stream()`。
+3. `stream()` 从 `ModelRegistry` 解析运行时模型。
+4. `stream()` 调用 `_prepare_options()`，完成 reasoning 钳制和 provider 元数据附加。
+5. `stream()` 调用 `_prepare_context()`，完成上下文规范化、Unicode 清理、能力裁剪、thinking 兼容、消息和工具转换。
+6. `stream()` 检测上下文窗口，必要时按策略裁剪旧消息。
+7. `stream()` 通过 `ProviderRegistry.resolve()` 拿到目标 provider。
+8. provider 构造厂商请求并输出统一 `StreamEvent`。
+9. `_produce_events()` 把事件写入有界队列。
+10. `StreamSession.consume()` 从队列对外提供统一事件流。
+11. `complete()` 用 `StreamAccumulator` 聚合事件。
+12. 收到 `done` 时返回 `AssistantMessage`；收到 `error` 时抛错。
+
+这个链路体现出 `ai` 模块的真正边界：它不是“SDK 适配器集合”，而是“围绕统一协议组织的大模型运行时中间层”。

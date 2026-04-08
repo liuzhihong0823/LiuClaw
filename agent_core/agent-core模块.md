@@ -1,539 +1,675 @@
 # agent_core 模块文档
 
-## 1. 模块概述
+## 模块定位
 
-`agent_core` 是建立在 [`ai`](/Users/admin/PyCharmProject/LiuClaw/ai) 模块之上的 Agent 运行时层，目标是把“模型调用 + 工具调用 + 多轮循环 + 事件流通知 + 高层状态管理”组织成一套统一 API。
+`agent_core` 是本项目的 Agent 运行时内核，位于 [`agent_core/__init__.py`](/Users/admin/PyCharmProject/LiuClaw/agent_core/__init__.py)。它建立在 `ai` 模块提供的模型流式能力之上，但自己不关心 OpenAI、Anthropic 或其他 provider 的协议细节，而是专注解决下面几件事：
 
-它主要解决四类问题：
+- 用统一的状态对象描述一次 Agent 运行过程
+- 把用户消息、模型输出、工具调用和后续追问组织成可持续推进的循环
+- 用事件流把运行中的关键节点暴露给上层
+- 提供工具前置检查、工具结果后处理、provider 错误重试等扩展点
+- 在低层 loop 之上再包一层高层 `Agent`，方便应用代码管理会话与队列
 
-1. 管理 Agent 运行状态。
-2. 执行 Agent 主循环。
-3. 以统一事件流向 UI 或上层应用暴露运行过程。
-4. 同时提供低层循环 API 和高层面向业务的 `Agent` API。
+模块主体由三个文件组成：
 
-当前模块由 3 个核心文件组成：
+- [`agent_core/types.py`](/Users/admin/PyCharmProject/LiuClaw/agent_core/types.py)：类型系统、配置对象、状态对象、事件对象和钩子协议
+- [`agent_core/agent_loop.py`](/Users/admin/PyCharmProject/LiuClaw/agent_core/agent_loop.py)：真正执行循环的低层运行时
+- [`agent_core/agent.py`](/Users/admin/PyCharmProject/LiuClaw/agent_core/agent.py)：对低层 loop 的高层封装，负责状态同步、消息队列和监听器管理
 
-- [`types.py`](/Users/admin/PyCharmProject/LiuClaw/agent_core/types.py)：定义核心协议、状态、事件、工具与配置。
-- [`agent_loop.py`](/Users/admin/PyCharmProject/LiuClaw/agent_core/agent_loop.py)：实现低层 Agent 主循环。
-- [`agent.py`](/Users/admin/PyCharmProject/LiuClaw/agent_core/agent.py)：实现高层 `Agent` 运行时封装。
+从代码分层上看，可以把它理解成：
 
-模块公开导出定义在 [`__init__.py`](/Users/admin/PyCharmProject/LiuClaw/agent_core/__init__.py) 中。
+- `types.py` 负责“定义问题”
+- `agent_loop.py` 负责“执行问题”
+- `agent.py` 负责“给业务侧一个更好用的控制面”
 
----
+## 对外导出
 
-## 2. 整体分层
+[`agent_core/__init__.py`](/Users/admin/PyCharmProject/LiuClaw/agent_core/__init__.py) 暴露了这个模块的公共 API，主要包括：
 
-### 2.1 `types.py`
+- 高层入口：`Agent`、`AgentOptions`
+- 低层入口：`agentLoop()`、`agentLoopContinue()`
+- 配置与状态：`AgentLoopConfig`、`AgentState`、`AgentContext`、`AgentRuntimeFlags`
+- 事件与错误：`AgentEvent`、`AgentError`
+- 工具相关：`AgentTool`、`BeforeToolCall*`、`AfterToolCall*`
+- 运行控制：`AbortSignal`、`RetryContext`、`RetryDecision`
 
-这一层只保留最核心的协议与数据模型，尽量不掺杂运行实现细节。它定义了：
+测试 [`tests/test_agent.py`](/Users/admin/PyCharmProject/LiuClaw/tests/test_agent.py) 和 [`tests/test_agent_loop.py`](/Users/admin/PyCharmProject/LiuClaw/tests/test_agent_loop.py) 也明确验证了这些对外形状是当前模块的主接口。
 
-- 流式函数类型 `AgentStreamFn`
-- 工具执行模式 `ToolExecutionMode`
-- 工具安检/质检上下文与返回结果
-- `AgentTool`
-- `AgentContext`
-- `AgentLoopConfig`
-- `AgentState`
-- `AgentEventType`
-- `AgentEvent`
+## 一、核心数据模型
 
-这层的职责是“约定形状”，而不是“执行逻辑”。
+### 1. `AbortSignal`
 
-### 2.2 `agent_loop.py`
+定义位置：[`agent_core/types.py`](/Users/admin/PyCharmProject/LiuClaw/agent_core/types.py)
 
-这一层是低层运行时核心，主要负责：
+这是模块内部统一使用的中断信号对象，核心能力有三件：
 
-- 启动一轮或续跑一轮 Agent 循环
-- 打开底层 LLM 流式会话
-- 将 `ai` 模块的流式事件映射成 `AgentEvent`
-- 执行工具调用
-- 处理 steering 和 follow-up
-- 维护低层状态并推送事件到 `StreamSession[AgentEvent]`
+- `abort(reason)`：标记中断并记录原因
+- `wait()`：异步等待中断发生
+- `throw_if_aborted()`：在已中断时抛出 `asyncio.CancelledError`
 
-这层更接近运行引擎。
+`agent_loop.py` 中几乎所有关键步骤都会调用 `signal.throw_if_aborted()`，所以取消不是只在最外层发生，而是会穿透：
 
-### 2.3 `agent.py`
+- 打开模型流之前
+- 获取 steering 或 follow-up 消息时
+- 消费 provider 事件时
+- 执行工具前后
 
-这一层面向应用开发，负责：
+这使得 `cancel()` 行为可以在较细粒度上生效。
 
-- 管理高层状态对象
-- 暴露普通消息、steering、follow-up 三类显式消息队列
-- 管理监听器
-- 统一处理取消、等待、重置
-- 对低层 session 做桥接，保证外部拿到的事件已经过高层状态同步
+### 2. `AgentError`
 
-这层更接近业务入口。
+定义位置：[`agent_core/types.py`](/Users/admin/PyCharmProject/LiuClaw/agent_core/types.py)
 
----
+统一错误结构如下：
 
-## 3. 公开 API 一览
+- `kind`：错误分类
+- `message`：面向运行时和事件流的主错误文本
+- `details`：可选细节
+- `retriable`：是否可重试
 
-当前 `agent_core` 对外公开这些主要对象：
+当前错误种类由 `AgentErrorKind` 约束为四类：
 
-- `Agent`
-- `AgentOptions`
-- `agentLoop`
-- `agentLoopContinue`
-- `AgentLoopConfig`
-- `AgentState`
-- `AgentContext`
-- `AgentEvent`
-- `AgentEventType`
-- `AgentTool`
-- `AgentStreamFn`
-- `ToolExecutionMode`
-- `BeforeToolCallContext`
-- `BeforeToolCallAllow`
-- `BeforeToolCallSkip`
-- `BeforeToolCallError`
-- `BeforeToolCallResult`
-- `AfterToolCallContext`
-- `AfterToolCallPass`
-- `AfterToolCallReplace`
-- `AfterToolCallResult`
+- `provider_error`
+- `tool_error`
+- `runtime_error`
+- `aborted`
 
----
+对应关系在实现中很清楚：
 
-## 4. 核心类型说明
+- provider 流打开失败或返回 error event 时，生成 `provider_error`
+- 工具不存在、参数校验失败、工具执行异常时，生成 `tool_error`
+- hook 返回了不支持的结果，或监听器抛错，通常记为 `runtime_error`
+- loop 或桥接任务被取消时，记为 `aborted`
 
-## 4.1 `AgentContext`
+### 3. `AgentRuntimeFlags`
 
-`AgentContext` 表示一次 Agent 调用 LLM 或工具时的上下文快照，包含：
+定义位置：[`agent_core/types.py`](/Users/admin/PyCharmProject/LiuClaw/agent_core/types.py)
+
+这是纯运行期字段，不是业务消息历史的一部分，包含：
+
+- `isStreaming`
+- `isRunning`
+- `isCancelled`
+- `turnIndex`
+- `retryCount`
+
+它的职责是把“当前 loop 正在做什么”从历史消息中分离出来。实现里这些值主要在 [`agent_core/agent_loop.py`](/Users/admin/PyCharmProject/LiuClaw/agent_core/agent_loop.py) 中被驱动更新。
+
+### 4. `AgentContext`
+
+定义位置：[`agent_core/types.py`](/Users/admin/PyCharmProject/LiuClaw/agent_core/types.py)
+
+这是一次模型调用或工具 hook 使用的上下文快照，字段很少：
 
 - `systemPrompt`
-- `history`
+- `messages`
 - `tools`
 
-它是一个“只关注当前轮上下文”的轻量对象，主要用于：
+它和 `ai.types.Context` 很像，但不是直接复用，而是作为 `agent_core` 自己的中间表示。原因是这个模块允许通过 `convert_to_llm` 和 `transform_context` 先改写上下文，再交给 `ai`。
 
-- 传给底层流式函数
-- 传给工具执行器
-- 传给 `beforeToolCall` / `afterToolCall`
+### 5. `AgentTool`
 
-## 4.2 `AgentStreamFn`
+定义位置：[`agent_core/types.py`](/Users/admin/PyCharmProject/LiuClaw/agent_core/types.py)
 
-`AgentStreamFn` 定义了“调用 AI 的函数”应该具备的统一签名：
+`AgentTool` 继承自 `ai.types.Tool` 的字段结构，并额外增加可执行器：
+
+- `name`
+- `description`
+- `inputSchema`
+- `metadata`
+- `renderMetadata`
+- `executor`
+
+为了兼容旧代码，它也支持 `execute` 这个别名属性。真正执行工具时，`agent_loop.py` 会优先走新签名：
 
 ```python
-async def __call__(
-    model: Model | str,
-    context: AgentContext,
-    thinking: ReasoningLevel | None,
-    registry: ProviderRegistry | None = None,
-) -> StreamSession:
-    ...
+executor(tool_call_id, params, signal, on_update)
 ```
 
-语义如下：
+如果因为签名不匹配抛出 `TypeError`，则回退到兼容旧形式：
 
-- `model`：当前模型
-- `context`：当前上下文
-- `thinking`：思考级别
-- `registry`：可选 provider 注册表
-- 返回值：`StreamSession`
+```python
+executor(arguments_text, agentContext)
+```
 
-当前默认实现不是直接把复杂的 provider 协议暴露出来，而是通过 [`agent_loop.py`](/Users/admin/PyCharmProject/LiuClaw/agent_core/agent_loop.py) 内部的 `_default_stream()` 适配到 `ai.streamSimple(...)`。
+这说明当前实现同时兼容新旧两套工具执行约定。
 
-也就是说：
+### 6. `AgentState`
 
-- 不传自定义 `stream` 时，默认走 `ai.streamSimple`
-- 传了自定义 `stream` 时，优先使用自定义实现
+定义位置：[`agent_core/types.py`](/Users/admin/PyCharmProject/LiuClaw/agent_core/types.py)
 
-## 4.3 `AgentTool`
+这是整个模块最重要的状态对象，字段包括：
 
-`AgentTool` 继承自 `ai.types.Tool`，在静态工具定义基础上增加了一个执行器：
+- `systemPrompt`
+- `model`
+- `thinking`
+- `tools`
+- `messages`
+- `stream_message`
+- `pending_tool_calls`
+- `error`
+- `runtime_flags`
 
-- `execute(arguments, context)`
+此外它保留了一组兼容旧命名的属性：
 
-其中：
+- `history` 对应 `messages`
+- `currentMessage` 对应 `stream_message`
+- `runningToolCall` 对应 `pending_tool_calls[0]`
+- `isStreaming` 对应 `runtime_flags.isStreaming`
 
-- `arguments` 是字符串形式的参数
-- `context` 是 `AgentContext`
+当前状态设计体现了一个很明确的分层：
 
-执行结果可以是：
+- `messages` 保存已经进入会话历史的消息
+- `stream_message` 保存当前尚在流式生成中的 assistant 消息
+- `pending_tool_calls` 保存当前正在执行的工具调用
+- `error` 保存本轮最后一次显式错误
+- `runtime_flags` 保存纯运行标记
 
-- `str`
-- `dict`
-- `ToolResultMessage`
+这组字段被高层 `Agent` 和低层 loop 同时共享，是整个系统的状态中枢。
 
-最终都会在低层被归一化为 `ToolResultMessage`。
+## 二、配置和扩展点
 
-## 4.4 工具执行模式
+### 1. `AgentLoopConfig`
 
-`ToolExecutionMode` 目前支持两种取值：
+定义位置：[`agent_core/types.py`](/Users/admin/PyCharmProject/LiuClaw/agent_core/types.py)
 
-- `"serial"`：串行执行
-- `"parallel"`：并行执行
-
-当前默认是串行模式。
-
-### 串行模式
-
-特点：
-
-- 按 assistant 返回的 `toolCalls` 顺序逐个执行
-- 事件顺序更稳定
-- 更容易调试
-
-### 并行模式
-
-特点：
-
-- 同一轮中的多个工具调用会并发执行
-- 工具结果回填到上下文时，仍按原始 `toolCalls` 顺序整理结果
-- 更适合多个互不依赖的工具调用
-
-## 4.5 `beforeToolCall` 与 `afterToolCall`
-
-`beforeToolCall` 用于执行前安检，`afterToolCall` 用于执行后质检。
-
-### `BeforeToolCallContext`
-
-包含：
-
-- `state`
-- `tool`
-- `toolCall`
-- `arguments`
-- `agentContext`
-
-### `BeforeToolCallResult`
-
-可以返回：
-
-- `BeforeToolCallAllow`
-- `BeforeToolCallSkip`
-- `BeforeToolCallError`
-- `None`
-
-语义分别是：
-
-- `allow`：允许真实执行
-- `skip`：跳过真实执行，直接使用替代结果
-- `error`：阻止执行，并生成错误结果
-- `None`：等同于允许执行
-
-### `AfterToolCallContext`
-
-包含：
-
-- `state`
-- `tool`
-- `toolCall`
-- `arguments`
-- `result`
-- `agentContext`
-
-### `AfterToolCallResult`
-
-可以返回：
-
-- `AfterToolCallPass`
-- `AfterToolCallReplace`
-- `None`
-
-语义分别是：
-
-- `pass`：保留原结果
-- `replace`：使用替代结果覆盖原结果
-- `None`：等同于保留原结果
-
-## 4.6 `AgentLoopConfig`
-
-`AgentLoopConfig` 是低层循环配置对象，定义了 Agent loop 运行所需的一切：
+`AgentLoopConfig` 是低层运行时的总配置对象，字段如下：
 
 - `systemPrompt`
 - `model`
 - `thinking`
 - `tools`
 - `stream`
-- `steer`
-- `followUp`
+- `convert_to_llm`
+- `transform_context`
+- `get_steering_messages`
+- `get_follow_up_messages`
 - `toolExecutionMode`
 - `beforeToolCall`
 - `afterToolCall`
+- `retryPolicy`
 - `registry`
 
-它的定位是：
+同时保留兼容别名：
 
-- 描述这轮 Agent loop 用什么模型、什么工具、什么控制逻辑来运行
+- `steer` 等价于 `get_steering_messages`
+- `followUp` 等价于 `get_follow_up_messages`
 
-## 4.7 `AgentState`
+这些字段大致可以分成四组：
 
-`AgentState` 描述 Agent 运行中的实时状态，包含：
+#### 模型调用相关
+
+- `model`
+- `thinking`
+- `stream`
+- `registry`
+
+如果 `stream` 为空，低层会使用默认的 `_default_stream()`，内部调用 `ai.streamSimple(...)`。
+
+#### 上下文转换相关
+
+- `convert_to_llm`
+- `transform_context`
+
+执行顺序是：
+
+1. 从 `AgentState.messages` 中选出要送给模型的消息
+2. 组装成 `AgentContext`
+3. 再做二次变换
+4. 最终转成 `ai.Context`
+
+默认行为分别是：
+
+- `default_convert_to_llm()`：只保留 user、assistant、tool result 这几类标准消息
+- `default_transform_context()`：不做改写
+
+#### 工具控制相关
+
+- `tools`
+- `toolExecutionMode`
+- `beforeToolCall`
+- `afterToolCall`
+
+这组字段决定工具是否可执行、怎样执行、是否允许执行前短路，以及执行后是否替换结果。
+
+#### 循环推进相关
+
+- `get_steering_messages`
+- `get_follow_up_messages`
+- `retryPolicy`
+
+其中：
+
+- steering 消息用于“在当前运行中追加新的用户输入或控制输入”
+- follow-up 消息用于“当一轮内层循环结束后，再决定是否继续下一轮”
+- retry policy 只处理 provider 级错误，不处理工具错误
+
+### 2. 工具前后置 hook
+
+定义位置：[`agent_core/types.py`](/Users/admin/PyCharmProject/LiuClaw/agent_core/types.py)
+
+#### `BeforeToolCallContext`
+
+包含：
+
+- `state`
+- `tool`
+- `toolCall`
+- `params`
+- `assistantMessage`
+- `agentContext`
+- `signal`
+
+这个上下文已经完成了：
+
+- 工具查找
+- 参数 JSON 解析
+- 参数 schema 校验
+- 发送给模型的上下文构造
+
+也就是说，`beforeToolCall` 拿到的是“已准备完毕但尚未执行”的工具调用。
+
+#### `BeforeToolCallResult`
+
+支持三种结果：
+
+- `BeforeToolCallAllow`：允许继续执行
+- `BeforeToolCallSkip`：跳过真实执行，直接返回替代结果
+- `BeforeToolCallError`：阻止执行，并产出错误结果
+
+测试覆盖见：
+
+- [`tests/test_agent_loop.py`](/Users/admin/PyCharmProject/LiuClaw/tests/test_agent_loop.py)
+
+其中验证了：
+
+- allow 会正常执行工具
+- skip 不会触发工具执行器
+- error 会生成 `metadata["error"] = True` 的工具结果
+
+#### `AfterToolCallContext`
+
+相比前置 hook，它多了：
+
+- `result`
+
+表示工具已经执行完且结果已被标准化为 `ToolResultMessage`。
+
+#### `AfterToolCallResult`
+
+支持两种结果：
+
+- `AfterToolCallPass`：保留原结果
+- `AfterToolCallReplace`：用新结果替换原结果
+
+如果 hook 返回其他不支持的对象，当前实现会把它记为 `runtime_error`。
+
+### 3. 重试策略
+
+定义位置：[`agent_core/types.py`](/Users/admin/PyCharmProject/LiuClaw/agent_core/types.py)
+
+由两部分组成：
+
+- `RetryContext`
+- `RetryDecision`
+
+`RetryContext` 包含：
+
+- `error`
+- `state`
+- `attempt`
+- `signal`
+
+`RetryDecision` 包含：
+
+- `shouldRetry`
+- `delaySeconds`
+
+默认策略 `default_retry_policy()` 永远不重试。真正生效的地方在 [`agent_core/agent_loop.py`](/Users/admin/PyCharmProject/LiuClaw/agent_core/agent_loop.py) 的 `_handle_provider_error()`。
+
+需要注意的是：
+
+- 这里只处理 provider 错误
+- 工具执行异常不会走这套重试策略
+- 如果决定重试，会累加 `state.runtime_flags.retryCount`
+
+## 三、低层运行时：`agent_loop.py`
+
+### 1. 文件职责
+
+[`agent_core/agent_loop.py`](/Users/admin/PyCharmProject/LiuClaw/agent_core/agent_loop.py) 是真正驱动 Agent 运行的地方，负责：
+
+- 初始化和快照状态
+- 把消息转换为模型上下文
+- 调用 `ai.streamSimple` 或自定义 `stream`
+- 把 provider 的流式事件映射成 `AgentEvent`
+- 解析并执行工具调用
+- 处理 steering 和 follow-up 消息
+- 管理取消、异常与结束事件
+
+这个文件的设计不是“一次请求一次响应”，而是“一个会话里可能跑多轮 turn，并在每轮之间插入控制消息”。
+
+### 2. 状态快照与消息归一化
+
+几个基础辅助函数非常重要：
+
+- `_copy_tools()`
+- `_copy_messages()`
+- `_snapshot_state()`
+- `_normalize_messages()`
+
+它们共同保证两件事：
+
+- 事件流中发出的 `state` 是快照，不直接暴露内部可变引用
+- 输入消息既可以是 dataclass 消息对象，也可以是带 `role` 的 dict
+
+这也是高层 `Agent` 和低层 loop 都在频繁做 copy 的原因，目的是减少共享可变对象导致的状态串改。
+
+### 3. 从 `AgentState` 到模型上下文
+
+相关函数：
+
+- `_to_agent_context()`
+- `_context_to_llm_context()`
+- `to_llm_context()`
+
+其中：
+
+- `_to_agent_context()` 是异步路径，给运行中的 loop 用
+- `to_llm_context()` 是同步路径，更像一个辅助函数或调试入口
+
+异步路径的执行顺序如下：
+
+1. 读取 `loop.convert_to_llm`，没有则用 `default_convert_to_llm`
+2. 基于 `state.messages` 得到要送给 LLM 的消息
+3. 把 `state.tools` 转成纯 `ai.types.Tool`
+4. 组装成 `AgentContext`
+5. 读取 `loop.transform_context`，没有则用默认实现
+6. 返回变换后的 `AgentContext`
+7. 在真正调用 `ai` 时，再转成 `ai.types.Context`
+
+这意味着：
+
+- `AgentState` 是内部真实状态
+- `AgentContext` 是模型调用前的中间投影
+- `ai.Context` 是最终 provider 调用输入
+
+### 4. 打开模型流
+
+相关函数：
+
+- `_default_stream()`
+- `_open_stream()`
+
+默认流函数 `_default_stream()` 最终会调用：
+
+```python
+ai.streamSimple(model, context, reasoning=thinking, registry=registry)
+```
+
+如果配置了自定义 `stream`，则 `_open_stream()` 会改为调用 `loop.stream(...)`。实现里还做了一个兼容处理：
+
+- 先尝试带 `signal=...` 调用
+- 如果自定义函数不接受这个参数，则退回旧签名
+
+因此文档上应把 `stream` 理解为“可覆盖默认 LLM 流入口的适配器”。
+
+### 5. assistant 消息流转
+
+相关函数：
+
+- `_append_text_delta()`
+- `_append_thinking_delta()`
+- `streamAssistantResponse()`
+
+`streamAssistantResponse()` 是单轮模型响应的核心函数。它会：
+
+1. 打开底层 provider 流
+2. 把 provider 的 `StreamEvent` 转换成 `AgentEvent`
+3. 维护 `state.stream_message`
+4. 在收到 `done` 时把最终 `AssistantMessage` 追加进 `state.messages`
+
+它处理的 provider 事件包括：
+
+- 文本增量
+- thinking 增量
+- tool call 开始、更新、结束
+- provider error
+- done
+
+特别要注意两点：
+
+#### 第一，`message_start` / `message_update` / `message_end` 是 Agent 级事件
+
+它们不是 provider 原始事件，而是 `agent_core` 自己映射出来的语义事件。
+
+#### 第二，即使 provider 返回的是纯工具调用消息，也仍然会有消息生命周期事件
+
+这一点有测试显式验证：
+
+- [`tests/test_agent_loop.py`](/Users/admin/PyCharmProject/LiuClaw/tests/test_agent_loop.py)
+
+也就是说，外部消费者可以统一依赖消息生命周期，而不必区分“这是文本回复还是工具调用回复”。
+
+### 6. 工具调用流水线
+
+相关函数：
+
+- `prepareToolCall()`
+- `executePreparedToolCall()`
+- `emitToolCallOutcome()`
+- `finalizeExecutedToolCall()`
+- `executeToolCallsSequential()`
+- `executeToolCallsParallel()`
+- `executeToolCalls()`
+
+可以把它拆成四个阶段看。
+
+#### 阶段 A：准备
+
+`prepareToolCall()` 会依次完成：
+
+1. 根据 `tool_call.name` 查找 `AgentTool`
+2. 检查工具是否存在且具备 `executor`
+3. 解析参数
+4. 用 `validate_tool_arguments()` 做 schema 校验
+5. 构造 `BeforeToolCallContext`
+6. 执行 `beforeToolCall`
+
+这个阶段的产出有两类：
+
+- `PreparedToolCall`
+- `PreparedToolCallError`
+
+如果是 `PreparedToolCallError`，可能代表：
+
+- 参数错误
+- 工具不存在
+- hook 直接返回错误
+- hook 直接返回替代结果
+
+#### 阶段 B：执行
+
+`executePreparedToolCall()` 会：
+
+- 把当前 tool call 记入 `state.pending_tool_calls`
+- 先发一条 `tool_execution_update`，内容是 `{"status": "running"}`
+- 调用工具执行器
+- 提供 `on_update` 回调，允许工具中途发进度更新
+- 在结束后清空 `state.pending_tool_calls`
+
+这里事件顺序有一个小特点：
+
+- `tool_execution_start` 在更外层发出
+- `tool_execution_update` 表示进入运行态
+- `tool_execution_end` 才携带最终结果
+
+#### 阶段 C：结果后处理
+
+`finalizeExecutedToolCall()` 会先把任意执行结果标准化为 `ToolResultMessage`，再执行 `afterToolCall`。如果 hook 返回 `AfterToolCallReplace`，结果会被替换。
+
+#### 阶段 D：落盘到历史
+
+`emitToolCallOutcome()` 负责：
+
+- 发出 `tool_execution_end`
+- 把工具结果追加到 `state.messages`
+- 再补发一组 `message_start` / `message_end`
+
+这里很关键，因为它说明在 `agent_core` 里，工具结果既是“工具执行结果”，也是“会话消息历史的一部分”。
+
+### 7. 串行与并行工具执行
+
+当前支持两种模式：
+
+- `serial`
+- `parallel`
+
+串行模式由 `executeToolCallsSequential()` 实现，逻辑最直观：一个个执行、一个个入历史。
+
+并行模式由 `executeToolCallsParallel()` 实现，特点有两个：
+
+- 先完成所有 tool call 的准备阶段
+- 用 `asyncio.gather(...)` 并发执行真正的工具逻辑
+
+但最终结果不会按完成先后顺序写回，而是会按 assistant 原始 `toolCalls` 的顺序重排。测试里有明确验证：
+
+- 慢工具先定义、快工具后定义时，最终历史里仍保持原始顺序
+
+因此这里的设计目标是：
+
+- 运行上并行
+- 语义上稳定
+- 历史顺序可预期
+
+### 8. Steering 与 Follow-up
+
+相关函数：
+
+- `_resolve_control_messages()`
+- `runLoop()`
+
+这是 `agent_core` 区别于简单“单次问答封装”的核心设计之一。
+
+#### Steering 消息
+
+`get_steering_messages` 会在每轮 turn 结束后检查。若返回新消息，这些消息会先进入历史，然后立即推动下一轮模型调用。
+
+适合用于：
+
+- 中途插入用户补充说明
+- 自动纠偏
+- 规划式多步推进
+
+#### Follow-up 消息
+
+`get_follow_up_messages` 会在内层循环退出之后再检查。若有消息，则重新进入下一轮外层推进。
+
+适合用于：
+
+- 本轮收尾后追加复查任务
+- 在某个阶段完成后发起下一阶段
+- 收束式多轮任务编排
+
+测试显示两者的先后顺序是：
+
+- steering 优先于 follow-up
+- follow-up 只会在内层 turn 流程结束后运行
+
+### 9. 主循环结构
+
+相关函数：
+
+- `runLoop()`
+- `runAgentLoop()`
+
+可以把运行过程概括为下面这条主线：
+
+1. `runAgentLoop()` 发出 `agent_start`
+2. 初始化 `turnIndex = 1` 并发出第一条 `turn_start`
+3. 把本次新输入消息写入历史并发消息生命周期事件
+4. 进入 `runLoop()`
+5. `runLoop()` 先处理 steering 消息
+6. 调用 `streamAssistantResponse()` 获取 assistant 回复
+7. 若回复中含工具调用，则执行工具
+8. 发出 `turn_end`
+9. 再检查 steering，必要时继续下一轮 turn
+10. 内层无更多 steering 后检查 follow-up
+11. 如无更多 follow-up，发出 `agent_end`
+
+从测试观察到的典型事件序列如下：
+
+```text
+agent_start
+turn_start
+message_start
+message_end
+message_start
+message_update
+message_update
+message_end
+turn_end
+agent_end
+```
+
+如果中途有工具执行，还会穿插：
+
+- `tool_execution_start`
+- `tool_execution_update`
+- `tool_execution_end`
+
+### 10. 会话创建与继续运行
+
+相关函数：
+
+- `_createAgentLoopSession()`
+- `agentLoop()`
+- `agentLoopContinue()`
+
+#### `agentLoop()`
+
+用于启动一个新对话，会：
+
+- 校验 `loop.model` 是否存在
+- 用 `AgentLoopConfig` 构造一个新的 `AgentState`
+- 把 `initialMessages` 规范化
+- 创建 `StreamSession[AgentEvent]`
+- 后台启动 `runAgentLoop(...)`
+
+#### `agentLoopContinue()`
+
+用于在已有历史上继续运行，有两个明确前置条件：
+
+- `state.messages` 不能为空
+- 历史最后一条消息不能是 `AssistantMessage`
+
+第二条限制很关键，意味着继续运行时，历史尾部必须是用户消息或工具结果，这样模型才有新的上下文可回应。
+
+它还会用传入的 `loop` 或从当前 `state` 推导出的配置，重新同步：
 
 - `systemPrompt`
 - `model`
 - `thinking`
 - `tools`
-- `history`
-- `isStreaming`
-- `currentMessage`
-- `runningToolCall`
-- `error`
 
-几个关键字段说明：
+然后清空上一次的错误和取消标记，再启动新会话。
 
-- `history`：完整对话历史
-- `isStreaming`：当前是否正在流式接收 assistant 输出
-- `currentMessage`：当前正在生成的 assistant 消息
-- `runningToolCall`：当前正在执行的工具调用
-- `error`：最近一次运行错误
+## 四、高层封装：`agent.py`
 
-## 4.8 事件模型
+### 1. 文件职责
 
-`AgentEventType` 当前固定为 10 类事件：
+[`agent_core/agent.py`](/Users/admin/PyCharmProject/LiuClaw/agent_core/agent.py) 并不重写 loop 逻辑，而是在低层 `agentLoop` / `agentLoopContinue` 之上提供一个更适合业务代码直接使用的对象接口。
 
-- `agent_start`
-- `agent_end`
-- `turn_start`
-- `turn_end`
-- `message_start`
-- `message_update`
-- `message_end`
-- `tool_execution_start`
-- `tool_execution_update`
-- `tool_execution_end`
+它主要解决四类问题：
 
-`AgentEvent` 中包含这些主要字段：
+- 状态持有和复制
+- 高层消息队列管理
+- 底层事件桥接
+- 监听器订阅
 
-- `type`
-- `state`
-- `message`
-- `messageDelta`
-- `toolCall`
-- `toolResult`
-- `error`
+### 2. `AgentOptions`
 
-事件对象的作用是：
-
-- 向 UI 推送统一生命周期信号
-- 让外部订阅者获得运行态快照
-- 把 assistant 输出、工具执行和对话轮次用统一协议串起来
-
----
-
-## 5. 低层主循环设计
-
-低层循环代码位于 [`agent_loop.py`](/Users/admin/PyCharmProject/LiuClaw/agent_core/agent_loop.py)。
-
-它的核心入口有两个：
-
-- `agentLoop(...)`
-- `agentLoopContinue(...)`
-
-此外，还有几个重要内部函数：
-
-- `runAgentLoop(...)`
-- `runLoop(...)`
-- `streamAssistantResponse(...)`
-- `executeToolCalls(...)`
-- `executeToolCallsSequential(...)`
-- `executeToolCallsParallel(...)`
-- `prepareToolCall(...)`
-- `executePreparedToolCall(...)`
-- `finalizeExecutedToolCall(...)`
-- `emitToolCallOutcome(...)`
-
-## 5.1 `agentLoop()`
-
-作用：
-
-- 启动新对话
-
-行为：
-
-1. 根据 `AgentLoopConfig` 构造初始 `AgentState`
-2. 创建 `StreamSession[AgentEvent]`
-3. 后台启动 `runAgentLoop(...)`
-4. 立即返回 session
-
-这意味着调用方不需要等整个循环跑完，就可以立刻开始订阅事件。
-
-示例：
-
-```python
-session = await agentLoop(loop_config, initialMessages=[UserMessage(content="你好")])
-async for event in session.consume():
-    print(event.type)
-```
-
-## 5.2 `agentLoopContinue()`
-
-作用：
-
-- 从已有状态继续运行，不额外添加新消息
-
-约束：
-
-- `state.history` 不能为空
-- `history` 最后一条不能是 `AssistantMessage`
-
-这是为了保证“继续”发生在合法的上下文位置上，例如：
-
-- 上一轮停在用户消息后
-- 上一轮停在工具结果后
-
-而不是 assistant 已经刚刚说完又立刻继续。
-
-## 5.3 `runAgentLoop()`
-
-这是后台生产者入口，负责：
-
-1. 记录本轮新增消息
-2. 发出 `agent_start`
-3. 发出首轮 `turn_start`
-4. 把新增用户消息写入历史并发出消息事件
-5. 调用 `runLoop(...)`
-
-注意：
-
-- 这里通过 queue 推送事件，而不是直接 `yield`
-- 这也是为什么外层可以用 `StreamSession` 做统一消费
-
-## 5.4 `runLoop()`
-
-这是主循环核心。
-
-当前实现大体上是“两层循环”：
-
-- 内层负责 pending 消息、assistant 回复、工具执行、steering
-- 外层负责 follow-up
-
-执行流程可以概括为：
-
-1. 先检查一次 `steer()`
-2. 进入内层循环
-3. 必要时发 `turn_start`
-4. 把 `pendingMessages` 追加到历史，并发出对应的消息事件
-5. 调用 `streamAssistantResponse(...)`
-6. 如果 assistant 带有工具调用，则执行 `executeToolCalls(...)`
-7. 发 `turn_end`
-8. 再检查一次 `steer()`
-9. 如果有 steering 消息，则继续内层下一轮
-10. 没有 steering 时，检查 `followUp()`
-11. 如果有 follow-up 消息，则进入外层下一轮
-12. 否则发 `agent_end`
-
-### 当前 steering 时序说明
-
-这里有一个当前实现细节需要特别注意：
-
-- `runLoop()` 在真正进入主循环前，会先检查一次 `steer()`
-
-因此，如果在启动前就已经准备好了 steering 消息，那么这些消息会在首轮 assistant 调用前就进入上下文。
-
-这和“严格只在 `turn_end` 之后触发 steering”略有不同。文档这里按当前代码真实行为说明。
-
-## 5.5 `streamAssistantResponse()`
-
-作用：
-
-- 获取单轮 assistant 回复
-- 把底层 `ai` 流式事件映射成公开 `AgentEvent`
-
-内部主要步骤：
-
-1. 通过 `_open_stream()` 获取流式 session
-2. 将 `state.isStreaming = True`
-3. 初始化 `state.currentMessage`
-4. 消费底层 `StreamEvent`
-5. 把底层事件转换成 `message_start` / `message_update` / `message_end`
-6. 将最终 assistant 消息追加到历史
-7. 流结束后把 `state.isStreaming = False`
-
-### 事件映射规则
-
-当前实现中：
-
-- `start`：首次触发 `message_start`
-- `text_delta` / `thinking_delta` / `toolcall_delta` 等中间增量：触发 `message_update`
-- `done`：写入最终 assistant 消息并触发 `message_end`
-- `error`：设置 `state.error`，返回 `None`
-
-### 纯 tool-call assistant 场景
-
-如果模型只产出工具调用、没有文本内容：
-
-- 仍然会补出一组 assistant 消息生命周期事件
-- 这样 UI 层依然能把它视作一条完整 assistant 消息
-
-## 5.6 工具执行流程
-
-工具执行入口是 `executeToolCalls(...)`。
-
-它会先读取 assistant 消息中的 `toolCalls`，再根据 `loop.toolExecutionMode` 选择：
-
-- `executeToolCallsSequential(...)`
-- `executeToolCallsParallel(...)`
-
-### 5.6.1 `prepareToolCall()`
-
-准备阶段负责四件事：
-
-1. 查找工具
-2. 解析参数
-3. 校验参数 schema
-4. 调用 `beforeToolCall`
-
-如果失败，会返回 `PreparedToolCallError`；
-如果成功，会返回 `PreparedToolCall`。
-
-### 5.6.2 `executePreparedToolCall()`
-
-负责真实执行工具：
-
-- 设置 `state.runningToolCall`
-- 发出 `tool_execution_update`
-- 调用工具的 `execute(...)`
-- 完成后清理 `state.runningToolCall`
-
-### 5.6.3 `finalizeExecutedToolCall()`
-
-负责工具执行后处理：
-
-1. 把执行结果归一化成 `ToolResultMessage`
-2. 调用 `afterToolCall`
-3. 若需要则替换结果
-4. 最终交给 `emitToolCallOutcome(...)`
-
-### 5.6.4 `emitToolCallOutcome()`
-
-这是工具结果落盘的统一出口，负责：
-
-1. 发 `tool_execution_end`
-2. 生成工具结果消息
-3. 追加到 `state.history`
-4. 再为工具结果补发一组 `message_start` / `message_end`
-
-这使得工具结果在上下文中的表现方式与普通消息一致，便于下一轮模型继续消费。
-
-### 5.6.5 工具错误策略
-
-当前默认策略是：
-
-- 工具不存在：不会终止 Agent，生成错误型 `ToolResultMessage`
-- 参数解析失败：不会终止 Agent，生成错误型 `ToolResultMessage`
-- schema 校验失败：不会终止 Agent，生成错误型 `ToolResultMessage`
-- `beforeToolCall` 阻止执行：不会终止 Agent，生成错误型结果
-- 工具执行异常：当前实现依赖上层异常路径处理，应在使用工具时保证执行器本身尽量可控
-
-错误型工具结果会写入：
-
-- `content = 错误文本`
-- `metadata["error"] = True`
-
----
-
-## 6. 高层 `Agent` 设计
-
-高层封装位于 [`agent.py`](/Users/admin/PyCharmProject/LiuClaw/agent_core/agent.py)。
-
-它的定位不是简单透传底层 session，而是一个真正的高层运行时对象。
-
-## 6.1 `AgentOptions`
-
-`AgentOptions` 是高层构造配置，包含：
+`AgentOptions` 包含：
 
 - `loop`
 - `initialState`
@@ -543,401 +679,251 @@ async for event in session.consume():
 - `followUpMessages`
 - `autoCopyState`
 
-说明如下：
+它体现出高层 `Agent` 的设计重点不是“把配置塞满”，而是“围绕一次长生命周期对象保存运行上下文”。
 
-- `loop`：底层循环配置来源
-- `initialState`：允许从已有状态恢复
-- `listeners`：初始监听器列表
-- `pendingMessages`：高层普通输入队列初始值
-- `steeringMessages`：高层 steering 队列初始值
-- `followUpMessages`：高层 follow-up 队列初始值
-- `autoCopyState`：是否在构造时复制输入状态，避免共享引用
+### 3. 初始化与状态复制
 
-## 6.2 高层三类消息队列
+`Agent.__init__()` 支持两种输入：
 
-当前高层 `Agent` 已显式区分三类消息队列。
+- 直接传 `AgentLoopConfig`
+- 传 `AgentOptions`
 
-### 普通待处理消息队列
+如果提供 `initialState`，默认会先做深一些的复制；否则会根据 loop 构造一个初始状态。对应辅助函数是：
 
-用途：
+- `_copy_message()`
+- `_copy_state()`
+- `_build_initial_state()`
 
-- 存放用户刚提交、准备进入下一次运行的新消息
+这里的目标非常明确：避免调用方和 `Agent` 内部共享同一批可变状态对象。
 
-相关 API：
+### 4. 高层持有的三类消息队列
 
-- `enqueue(...)`
-- `dequeueAll()`
-- `clearQueue()`
-- `queueSize()`
-- `pendingMessages`
+与低层直接传消息不同，高层 `Agent` 额外维护三组队列：
 
-### steering 队列
+- `_pendingMessages`
+- `_steeringMessages`
+- `_followUpMessages`
 
-用途：
+对应公开接口包括：
 
-- 存放中途插话消息
-- 会在高层桥接成底层 `steer()`
+- `enqueue()` / `dequeueAll()` / `clearQueue()` / `queueSize()`
+- `enqueueSteering()` / `dequeueSteeringAll()` / `clearSteeringQueue()` / `steeringQueueSize()`
+- `enqueueFollowUp()` / `dequeueFollowUpAll()` / `clearFollowUpQueue()` / `followUpQueueSize()`
 
-相关 API：
+测试里也专门验证了三者是相互独立的。
 
-- `enqueueSteering(...)`
-- `dequeueSteeringAll()`
-- `clearSteeringQueue()`
-- `steeringQueueSize()`
-- `steeringMessages`
+这层设计的意义在于：
 
-### follow-up 队列
+- 业务侧可以先积攒普通消息，再统一 `run()`
+- 也可以在运行前预放 steering 或 follow-up 消息
+- 高层对象比低层函数更适合做长期会话控制
 
-用途：
+### 5. 对底层 loop 的桥接
 
-- 存放当前任务自然结束后再处理的消息
-- 会在高层桥接成底层 `followUp()`
+核心方法是 `_runLoopSession()`。
 
-相关 API：
+它会：
 
-- `enqueueFollowUp(...)`
-- `dequeueFollowUpAll()`
-- `clearFollowUpQueue()`
-- `followUpQueueSize()`
-- `followUpMessages`
+1. 检查是否重复运行
+2. 根据是否有历史和是否有新消息决定走 `agentLoop()` 还是 `agentLoopContinue()`
+3. 调用 `_buildLoopConfig()` 生成一次新的 loop 配置
+4. 创建新的 `AbortSignal`
+5. 启动底层 session
+6. 起一个桥接任务消费底层事件
+7. 每消费一条事件，就调用 `_handleLoopEvent()` 同步高层 `self.state`
+8. 再把事件分发给监听器和对外 session
 
-## 6.3 高层如何桥接 steering / follow-up
+这里最重要的不是“简单转发”，而是“高层自己的状态始终跟着底层事件走”。因此 `Agent.state` 会随着事件流逐步更新，而不是只在结束时才替换。
 
-`Agent._buildLoopConfig()` 不会简单把原始 `_loop.steer` 和 `_loop.followUp` 原样下传，而是会包装成两个高层桥接函数：
+### 6. `_buildLoopConfig()` 的作用
 
-- 先读取高层显式队列中的消息
-- 再调用外部传入的 `steer` / `followUp` hook
-- 把两部分结果合并后返回给底层 loop
+这个方法会把高层内部状态和原始 loop 配置合并成一次新的低层配置。它尤其做了一个关键动作：
 
-这意味着：
+- 把高层的 steering 队列和 follow-up 队列包成新的 `get_steering_messages` / `get_follow_up_messages` 函数
 
-- 高层显式队列和低层 hook 机制是同时生效的
-- 业务层既可以调用 `enqueueSteering(...)`
-- 也可以直接在 `AgentLoopConfig.steer` 中写自定义逻辑
+也就是说，高层队列不是让业务代码自己手工塞进低层，而是由高层在启动时动态注入到 loop 配置中。
 
-## 6.4 监听器系统
+如果原始 loop 自己也定义了 hook，那么高层会把：
 
-高层支持事件监听器订阅。
+- 本地队列中的消息
+- 原始 hook 返回的消息
 
-相关 API：
+合并起来一起交给低层执行。
 
-- `subscribe(listener)`
-- `unsubscribe(listener)`
+### 7. 事件处理与监听器
+
+相关方法：
+
+- `_handleLoopEvent()`
+- `_emit_to_listeners()`
+- `emit()`
+- `subscribe()`
+- `unsubscribe()`
 - `clearListeners()`
 
-监听器特点：
+处理逻辑大致如下：
 
-- 按注册顺序调用
-- 支持 sync / async
-- 单个监听器报错不会打断主流程
-- 监听器错误会写入 `state.error`
+- 若事件里带 `state`，先复制后同步到 `self.state`
+- 再根据事件类型修正高层特定字段
+- 再把事件分发给所有监听器
+- 最后写入高层自己的输出队列
 
-## 6.5 状态管理
+其中 `_handleLoopEvent()` 重点维护：
 
-高层支持读取和修改状态。
+- `stream_message`
+- `pending_tool_calls`
+- `error`
+- `runtime_flags.isStreaming`
+- `runtime_flags.isRunning`
 
-相关 API：
+监听器出错不会打断主流程，测试显式验证了这一点。当前行为是：
 
-- `getState()`
-- `setState(state)`
-- `updateState(**kwargs)`
-- `setThinking(...)`
-- `setSystemPrompt(...)`
-- `setModel(...)`
-- `setTools(...)`
+- 把监听器异常记到 `agent.state.error`
+- 不中止整体运行
 
-注意：
+### 8. 用户态 API
 
-- 运行中不允许随意修改关键运行字段
-- `setState()` 在运行中会直接报错
-- `updateState()` 在运行中修改 `isStreaming`、`currentMessage`、`runningToolCall` 会报错
+高层最常用的方法有：
 
-## 6.6 运行控制
+- `prompt(message)`：先 `enqueue()` 再立即运行
+- `run()`：如果普通队列非空，则把队列作为新消息启动；否则按继续对话模式运行
+- `continueConversation()`：从已有上下文继续，不追加新消息
+- `resume()`：`continueConversation()` 的别名
+- `cancel()`：取消当前运行
+- `wait()`：等待当前运行结束
+- `reset()`：重置状态和全部队列
 
-高层提供：
+这里有几个边界值得特别说明：
+
+#### `run()` 的分支逻辑
+
+- 队列里有普通消息时，走“新消息驱动的一轮运行”
+- 队列为空时，走“基于已有历史继续运行”
+
+#### `continueConversation()` 的前提
+
+和低层一致，必须已经有历史，而且不能从 assistant 尾消息继续。
+
+#### `reset()` 的限制
+
+运行中不能 reset，否则会抛 `RuntimeError`。
+
+### 9. 取消与清理
+
+相关方法：
 
 - `cancel()`
 - `wait()`
-- `reset()`
+- `_cleanup_after_run()`
 
-### `cancel()`
+取消时会同时处理三件事：
 
-作用：
+- 标记 `_cancelRequested`
+- 触发 `AbortSignal.abort(...)`
+- 取消当前 session 的生产任务与桥接任务
 
-- 取消当前运行中的高层/底层 session
-- 不会清空历史消息
+结束清理时会重置：
 
-### `wait()`
+- `_isRunning`
+- `_currentSession`
+- `_currentTask`
+- `_abortSignal`
+- `state.runtime_flags.isStreaming`
+- `state.runtime_flags.isRunning`
+- `state.stream_message`
+- `state.pending_tool_calls`
 
-作用：
+因此高层 `Agent` 是显式区分“历史保留”和“运行时控制状态清空”的。
 
-- 等待当前 session 的后台任务结束
-- 不主动消费事件
+## 五、典型运行流程
 
-### `reset()`
+把高层和低层串起来看，一次最常见的运行路径如下：
 
-作用：
+1. 业务代码创建 `AgentLoopConfig`
+2. 用它构造 `Agent` 或直接调用 `agentLoop()`
+3. 新消息进入 `state.messages`
+4. loop 发出 `agent_start`、`turn_start`
+5. 当前轮的输入消息发出 `message_start`、`message_end`
+6. 组装 `AgentContext` 并打开模型流
+7. assistant 文本或工具调用增量转成 `message_update`
+8. assistant 完成后写入历史并发 `message_end`
+9. 若有工具调用，执行工具并把 `ToolResultMessage` 写入历史
+10. 发出 `turn_end`
+11. 检查 steering，再检查 follow-up
+12. 无后续工作后发出 `agent_end`
 
-- 清空三类高层消息队列
-- 清空当前 session / task
-- 重建初始状态
+如果使用高层 `Agent`，这个过程中还会多一层：
 
-限制：
+- 底层事件先进入桥接器
+- 高层同步自身状态
+- 监听器收到事件
+- 最后外部消费者从高层 session 里读取事件
 
-- 运行中禁止 `reset()`
+## 六、模块边界
 
-## 6.7 高层入口方法
+### `agent_core` 负责什么
 
-### `prompt(message)`
+- Agent 运行状态模型
+- 多轮 turn 控制
+- 工具执行与工具 hook
+- 事件流封装
+- 会话继续、取消和高层对象管理
 
-作用：
+### `agent_core` 不负责什么
 
-- 先入普通消息队列，再立即启动运行
+- 不直接实现 provider 协议
+- 不负责模型注册细节
+- 不负责 CLI、TUI 或交互界面
+- 不负责工作区资源装载、技能系统、主题或扩展
 
-### `continueConversation()`
+这些能力分别落在其他模块，尤其是 `ai` 和 `coding_agent`。
 
-作用：
+## 七、测试透露出的设计意图
 
-- 从当前状态继续运行
-- 不添加新消息
+从 [`tests/test_agent_loop.py`](/Users/admin/PyCharmProject/LiuClaw/tests/test_agent_loop.py) 和 [`tests/test_agent.py`](/Users/admin/PyCharmProject/LiuClaw/tests/test_agent.py) 可以总结出当前实现刻意保证的行为：
 
-### `resume()`
+- `agentLoop()` 会立即返回 `StreamSession`，不会阻塞到整轮结束
+- 默认底层流函数是 `ai.streamSimple`
+- 允许完全自定义 `stream`，并优先于默认实现
+- `agentLoopContinue()` 必须建立在有效历史上
+- 工具前后置 hook 可以改变执行路径和最终结果
+- 并行工具执行时，结果顺序仍和原始 tool call 顺序一致
+- steering 的优先级高于 follow-up
+- 纯工具调用消息也必须有完整消息生命周期事件
+- 高层 `Agent` 的三类消息队列是分离的
+- 监听器报错不会破坏主流程
+- 公共类与关键方法带有中文 docstring
 
-作用：
+这些测试基本定义了 `agent_core` 当前版本的行为契约。
 
-- `continueConversation()` 的兼容别名
+## 八、适合怎样使用
 
-### `run()`
+如果你只需要：
 
-作用：
+- 给定消息
+- 执行一轮或多轮 Agent 循环
+- 自己消费事件流
 
-- 如果普通消息队列非空，则消费这些消息并启动运行
-- 如果普通消息队列为空，则尝试按“继续”模式运行
+那么直接使用 `agentLoop()` / `agentLoopContinue()` 就够了。
 
----
+如果你还需要：
 
-## 7. 高层桥接会话模型
+- 长生命周期对象
+- 累积消息队列
+- 监听器订阅
+- 随时取消和等待
+- 高层状态读写接口
 
-高层 `Agent` 当前不是直接把底层 session 原样返回，而是采用“双 session 桥接”模型：
+那么更适合使用 `Agent`。
 
-1. 底层 session：来自 `agentLoop(...)` 或 `agentLoopContinue(...)`
-2. 高层 session：暴露给调用方
-3. 中间桥接任务：消费底层事件，调用 `_handleLoopEvent(...)` 更新本地状态，再转发到高层 queue
+## 九、小结
 
-这样设计的好处是：
+`agent_core` 的实现重点不是“再包一层模型调用”，而是把模型回复、工具执行、控制消息和运行状态整合成一个可持续推进的 Agent 循环。
 
-- 高层状态始终和外部看到的事件保持同步
-- 监听器拿到的是“已经过高层状态同步”的事件
-- 高层可以统一管理取消、等待和清理
+它的核心价值体现在三点：
 
----
+- 用 `AgentState` 和 `AgentEvent` 把运行过程变成显式状态机
+- 用 `AgentLoopConfig` 提供清晰的扩展点，而不是把逻辑写死
+- 用高层 `Agent` 把底层异步循环包装成更可控的会话对象
 
-## 8. 典型使用方式
-
-## 8.1 低层 API 用法
-
-```python
-from ai import UserMessage
-from agent_core import AgentLoopConfig, agentLoop
-
-loop = AgentLoopConfig(
-    model="openai:gpt-5.4",
-)
-
-session = await agentLoop(loop, initialMessages=[UserMessage(content="你好")])
-
-async for event in session.consume():
-    print(event.type, event.messageDelta)
-```
-
-适合场景：
-
-- 需要完全控制 loop 行为
-- 自己接管状态和事件处理
-- 做底层框架或中间层
-
-## 8.2 高层 `Agent` 用法
-
-```python
-from ai import UserMessage
-from agent_core import Agent, AgentLoopConfig
-
-agent = Agent(
-    AgentLoopConfig(
-        model="openai:gpt-5.4",
-    )
-)
-
-session = await agent.prompt(UserMessage(content="帮我总结这个需求"))
-
-async for event in session.consume():
-    print(event.type)
-
-print(agent.lastMessage)
-```
-
-适合场景：
-
-- 需要一个可复用 Agent 对象
-- 需要保留状态
-- 需要监听器、取消、等待、重置
-- 需要显式管理普通消息、steering、follow-up 三类队列
-
-## 8.3 高层 steering / follow-up 用法
-
-```python
-from ai import UserMessage
-
-agent.enqueue(UserMessage(content="先处理主任务"))
-agent.enqueueSteering(UserMessage(content="中途补充一个限制条件"))
-agent.enqueueFollowUp(UserMessage(content="任务结束后再做总结"))
-
-session = await agent.run()
-async for event in session.consume():
-    ...
-```
-
----
-
-## 9. 事件生命周期说明
-
-一次较完整的运行中，常见事件顺序大致如下：
-
-1. `agent_start`
-2. `turn_start`
-3. 用户消息对应的 `message_start`
-4. 用户消息对应的 `message_end`
-5. assistant 的 `message_start`
-6. assistant 的若干 `message_update`
-7. assistant 的 `message_end`
-8. 如有工具调用：
-9. `tool_execution_start`
-10. `tool_execution_update`
-11. `tool_execution_end`
-12. 工具结果对应的 `message_start`
-13. 工具结果对应的 `message_end`
-14. `turn_end`
-15. 若 steering / follow-up 触发，则继续下一轮
-16. `agent_end`
-
-需要注意：
-
-- `message_*` 不只会出现在用户和 assistant 上，也会用于工具结果消息
-- `tool_execution_*` 只描述工具执行生命周期
-- `agent_end` 是整个 session 的终止标记
-
----
-
-## 10. 与 `ai` 模块的关系
-
-`agent_core` 并不重新实现 provider 层协议，而是复用 `ai` 提供的基础能力：
-
-- 复用 `ai.types` 中的消息模型和模型类型
-- 复用 `ai.streamSimple(...)`
-- 复用泛型化后的 `ai.session.StreamSession`
-- 复用参数 schema 校验工具 `validate_tool_arguments(...)`
-
-也就是说：
-
-- `agent_core` 关心的是 Agent 运行时编排
-- `ai` 关心的是模型、provider 和底层流式协议
-
-两者职责边界比较清晰。
-
----
-
-## 11. 当前实现中的几个重要细节
-
-## 11.1 默认流式入口是 `streamSimple`
-
-当前默认底层调用走 `ai.streamSimple(...)`，而不是在 `types.py` 中暴露更复杂的 mode 配置。
-
-这让 `AgentLoopConfig` 更简单，也更符合当前 Agent runtime 的默认使用方式。
-
-## 11.2 `StreamSession` 已泛型化
-
-`ai.session.StreamSession` 现在是泛型的：
-
-- `StreamSession[StreamEvent]` 可用于 `ai`
-- `StreamSession[AgentEvent]` 可用于 `agent_core`
-
-运行时行为不变，仍然保留：
-
-- `queue`
-- `consume()`
-- `close()`
-- `wait_closed()`
-
-## 11.3 高层 `run()` 与 `continueConversation()` 的区别
-
-- `run()`：优先处理高层普通消息队列
-- `continueConversation()`：纯续跑，不添加新消息
-
-如果当前没有历史，直接 `continueConversation()` 会报错。
-
-## 11.4 `agentLoopContinue()` 的合法性检查
-
-低层继续运行时有两个显式校验：
-
-- `history` 不能为空
-- 最后一条消息不能是 assistant
-
-这是为了避免在非法断点上继续执行。
-
-## 11.5 事件中的 `state` 是快照
-
-底层每次发事件时，都会对状态做一次快照复制，而不是直接把原始可变状态对象暴露出去。
-
-这样可以避免：
-
-- UI 持有事件后又被后续运行污染
-- 调试时出现“同一个事件对象状态被后续修改”的问题
-
----
-
-## 12. 适用场景建议
-
-推荐使用低层 `agentLoop` 的场景：
-
-- 你正在做框架层或基础设施层封装
-- 你想完全掌控循环行为
-- 你不需要高层 Agent 对象长期持有状态
-
-推荐使用高层 `Agent` 的场景：
-
-- 你在做应用层开发
-- 你需要反复与同一个 Agent 交互
-- 你需要显式消息队列和事件监听
-- 你需要取消、等待和重置能力
-
----
-
-## 13. 后续可继续演进的方向
-
-从当前实现看，后续还可以继续加强这些方向：
-
-1. 更细粒度的工具异常分类与恢复策略。
-2. 更严格的 steering 时机控制。
-3. 对工具执行超时、并发上限、取消传播的增强支持。
-4. 更多与 UI 直接对应的事件元数据。
-5. README 与示例代码进一步同步到当前高层三队列设计。
-
----
-
-## 14. 总结
-
-`agent_core` 当前已经形成了一套较完整的 Agent runtime 结构：
-
-- `types.py` 定协议
-- `agent_loop.py` 跑循环
-- `agent.py` 做高层封装
-
-它既能支持底层可控的事件流运行，也能支持高层可复用的 `Agent` 对象式开发。
-
-尤其是当前高层已经显式区分了：
-
-- 普通输入队列
-- steering 队列
-- follow-up 队列
-
-这让整个模块在语义上更贴近真实 Agent 场景，也更方便后续继续扩展。
+如果把整个项目看成一套分层架构，那么 `agent_core` 就是连接 `ai` 能力层和 `coding_agent` 产品层的中间运行时。

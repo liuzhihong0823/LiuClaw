@@ -1,86 +1,131 @@
-# ai
+# LiuClaw
 
-面向上层业务的统一 LLM 接入层。
+LiuClaw 是一个分层清晰的终端智能体项目，核心由三部分组成：
 
-这个模块将不同厂商的大模型能力统一为一套 async API，并围绕以下核心概念组织：
-- `Context`：一次请求的完整上下文，包含 `systemPrompt`、`messages`、`tools`
-- `Model`：统一模型描述，包含模型 ID、价格、上下文窗口等元数据
-- `StreamEvent`：统一流式事件协议，覆盖文本、thinking、tool call、done、error
-- `StreamSession`：队列化流式会话对象，负责承载 producer task 和事件队列
-- `ProviderRegistry`：按 provider 名懒加载适配器的注册中心
-- `ai.converters.*`：处理跨 provider 的历史消息与工具兼容转换
-- `ai.utils.*`：提供流式聚合、schema 校验、上下文溢出检测、Unicode 清理等基础设施
+- `ai`：统一大模型接入层，负责模型协议、provider 适配、流式事件、上下文预处理与工具参数兼容。
+- `agent_core`：Agent 运行时内核，负责多轮循环、工具调用、状态管理、事件流、中断与重试。
+- `coding_agent`：产品编排层，负责 CLI、TUI、会话持久化、工具注册、资源加载、扩展机制与上下文压缩。
 
-## Install
+如果把整个仓库看成一条运行链路，可以理解为：
+
+`coding_agent` 负责把应用装起来，`agent_core` 负责把 Agent 跑起来，`ai` 负责把模型调起来。
+
+## 项目结构
+
+```text
+LiuClaw/
+├── ai/                  # 统一 LLM 接入层
+├── agent_core/          # Agent 运行时内核
+├── coding_agent/        # 终端产品层与交互入口
+├── tests/               # 模块级行为测试
+├── examples/            # 基础调用示例
+├── pyproject.toml
+└── README.md
+```
+
+## 分层说明
+
+### 1. `ai`
+
+`ai` 模块把不同厂商的大模型能力统一成一致接口，核心能力包括：
+
+- 统一类型体系：`Context`、`Model`、`AssistantMessage`、`ToolCall`、`StreamEvent`
+- 统一调用入口：`stream()`、`complete()`、`streamSimple()`、`completeSimple()`
+- provider 注册与懒加载：`ProviderRegistry`
+- 模型目录与配置覆盖：`ModelRegistry`、`AIConfig`
+- provider 前转换与清理：messages/tools/thinking/capabilities/context-window/unicode
+- 统一流式聚合与错误模型
+
+更详细说明见 [ai/ai模块.md](/Users/admin/PyCharmProject/LiuClaw/ai/ai模块.md)。
+
+### 2. `agent_core`
+
+`agent_core` 建立在 `ai` 之上，负责把“模型输出 + 工具执行 + 多轮会话”组织成可持续推进的 Agent 循环，核心能力包括：
+
+- 低层循环入口：`agentLoop()`、`agentLoopContinue()`
+- 高层封装：`Agent`
+- 状态模型：`AgentState`、`AgentRuntimeFlags`
+- 统一事件：`AgentEvent`
+- 工具前后钩子：`beforeToolCall`、`afterToolCall`
+- steering / follow-up / retry / abort 等运行控制
+
+更详细说明见 [agent_core/agent-core模块.md](/Users/admin/PyCharmProject/LiuClaw/agent_core/agent-core模块.md)。
+
+### 3. `coding_agent`
+
+`coding_agent` 是面向终端使用的产品层。它把模型、工具、系统提示、会话存储、扩展与交互界面组装成一个真正可运行的编码助手，核心能力包括：
+
+- CLI 入口与 one-shot / interactive 两种模式
+- 用户级与项目级配置加载
+- 资源加载：skills、prompts、themes、`AGENTS.md`、extensions
+- `AgentSession` 会话编排与事件映射
+- 工具注册与安全策略
+- session 持久化、恢复与分支摘要压缩
+- 基于 `prompt_toolkit` 的交互界面
+
+更详细说明见 [coding_agent/coding-agent模块.md](/Users/admin/PyCharmProject/LiuClaw/coding_agent/coding-agent模块.md)。
+
+## 快速开始
+
+### 安装依赖
 
 ```bash
 uv sync
 ```
 
-## Core API
+### 运行测试
 
-- `stream(model, context, options)`：返回 `StreamSession`
-- `complete(model, context, options)`：消费 session queue，一次性拿到最终 `AssistantMessage`
-- `streamSimple(model, context, ...)`：返回简化参数版 `StreamSession`
-- `completeSimple(model, context, ...)`：基于 queue 聚合最终结果
-- `get_model(model_id)`：从内置模型目录中获取 `Model`
-- `list_models(provider=None)`：列出内置模型目录，可按 provider 过滤
+```bash
+uv run pytest
+```
 
-## Agent Runtime
+### 运行交互式编码助手
 
-`agent_core` 建立在 `ai` 之上，提供两层新的运行时 API：
-- 低层：`agentLoop()` / `agentLoopContinue()`
-- 高层：`Agent`
+```bash
+uv run python -m coding_agent
+```
 
-运行配置按三层拆分：
-- `AgentLoopConfig`：主循环配置，包含模型、system prompt、工具、steer/followUp 与工具钩子
-- `AgentContext`：一次 AI / 工具调用时使用的上下文快照
-- `AgentStreamFn`：底层流式函数签名，默认走 `streamSimple`
+常用参数：
 
-### `agentLoop()` Example
+- `--model`：指定模型 ID
+- `--cwd`：指定工作目录
+- `--thinking`：`low`、`medium`、`high`
+- `--session`：恢复历史会话
+- `--new`：强制新建会话
+- `--compact`：压缩当前会话后退出
+- `--theme`：指定主题
+
+### 单次提示模式
+
+```bash
+uv run python -m coding_agent "帮我总结当前项目结构"
+```
+
+## 作为库使用
+
+### 直接使用 `ai`
 
 ```python
 import asyncio
 
-from ai import UserMessage
-from agent_core import AgentLoopConfig, AgentTool, agentLoop
-
-
-async def lookup(arguments: str, context) -> str:
-    await context.reportProgress("searching")
-    return '{"result":"ok"}'
+from ai import Context, UserMessage, complete
 
 
 async def main() -> None:
-    async for event in agentLoop(
-        AgentLoopConfig(
-            model="openai:gpt-5",
-            systemPrompt="你是一个可以调用工具的技术助手。",
-            tools=[
-                AgentTool(
-                    name="lookup_spec",
-                    description="查询规格说明",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {"query": {"type": "string"}},
-                        "required": ["query"],
-                    },
-                    execute=lookup,
-                )
-            ],
+    message = await complete(
+        model="openai:gpt-5",
+        context=Context(
+            systemPrompt="你是一个简洁的中文助手。",
+            messages=[UserMessage(content="请一句话介绍 LiuClaw。")],
         ),
-        initialMessages=[UserMessage(content="请查一下规格说明")],
-    ):
-        if event.type == "message_update":
-            print(event.messageDelta, end="")
-        elif event.type == "tool_execution_end":
-            print("\nTOOL:", event.toolResult.content)
+    )
+    print(message.content)
 
 
 asyncio.run(main())
 ```
 
-### `Agent` Example
+### 使用 `agent_core`
 
 ```python
 import asyncio
@@ -92,223 +137,42 @@ from agent_core import Agent, AgentLoopConfig
 async def main() -> None:
     agent = Agent(
         AgentLoopConfig(
-            model="anthropic:claude-sonnet-4",
-            systemPrompt="你是一个中文文档助手。",
+            model="openai:gpt-5",
+            systemPrompt="你是一个代码助手。",
         )
     )
-    await agent.send(UserMessage(content="帮我总结一下这个模块"))
+    await agent.send(UserMessage(content="请解释这个仓库的三层结构。"))
 
-    async for event in agent.run():
+    async for event in await agent.run():
         if event.type == "message_update":
             print(event.messageDelta, end="")
 
-    print("\nLAST:", agent.lastMessage.content)
-
 
 asyncio.run(main())
 ```
 
-## Context Example
+更多示例见 [examples/openai_simple.py](/Users/admin/PyCharmProject/LiuClaw/examples/openai_simple.py) 和 [examples/anthropic_simple.py](/Users/admin/PyCharmProject/LiuClaw/examples/anthropic_simple.py)。
 
-```python
-from ai import Context, Tool, UserMessage
+## 关键设计
 
-context = Context(
-    systemPrompt="你是一个负责总结需求的助手。",
-    messages=[
-        UserMessage(content="请用一句话总结这个模块的目标。"),
-    ],
-    tools=[
-        Tool(
-            name="lookup_spec",
-            description="查询规格说明",
-            inputSchema={
-                "type": "object",
-                "properties": {"query": {"type": "string"}},
-                "required": ["query"],
-            },
-        )
-    ],
-)
-```
+- 非流式调用不是单独实现的另一套路径，`complete()` 本质上是对 `stream()` 的统一聚合。
+- `agent_core` 不直接依赖具体厂商协议，而是通过 `ai` 的统一流式接口驱动 Agent 循环。
+- `coding_agent` 不把逻辑塞进入口函数，而是把配置、资源、工具、会话和交互拆到独立组件中装配。
+- 会话摘要压缩与恢复是产品层能力，不污染 `ai` 与 `agent_core` 的纯运行时边界。
+- 扩展机制已经预留工具、provider、监听器和系统提示扩展点，便于后续演进。
 
-## Queue Streaming Example
+## 文档导航
 
-```python
-import asyncio
+- [ai/ai模块.md](/Users/admin/PyCharmProject/LiuClaw/ai/ai模块.md)
+- [agent_core/agent-core模块.md](/Users/admin/PyCharmProject/LiuClaw/agent_core/agent-core模块.md)
+- [coding_agent/coding-agent模块.md](/Users/admin/PyCharmProject/LiuClaw/coding_agent/coding-agent模块.md)
+- [tests/test_client.py](/Users/admin/PyCharmProject/LiuClaw/tests/test_client.py)
+- [tests/test_agent_loop.py](/Users/admin/PyCharmProject/LiuClaw/tests/test_agent_loop.py)
+- [tests/test_coding_agent.py](/Users/admin/PyCharmProject/LiuClaw/tests/test_coding_agent.py)
 
-from ai import Context, Tool, UserMessage, stream
+## 适合从哪里读起
 
-
-async def main() -> None:
-    session = await stream(
-        model="openai:gpt-5",
-        context=Context(
-            systemPrompt="你是一个简洁的中文助手。",
-            messages=[UserMessage(content="请流式介绍统一 LLM 接入层。")],
-            tools=[
-                Tool(
-                    name="lookup_spec",
-                    description="查询规格说明",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {"query": {"type": "string"}},
-                        "required": ["query"],
-                    },
-                )
-            ],
-        ),
-    )
-
-    async for event in session.consume():
-        if event.type == "text_delta":
-            print(event.text, end="")
-        if event.type in {"done", "error"}:
-            break
-
-
-asyncio.run(main())
-```
-
-## `completeSimple()` With Queue Runtime
-
-```python
-import asyncio
-
-from ai import Context, ToolResultMessage, UserMessage, completeSimple, get_model
-
-
-async def main() -> None:
-    message = await completeSimple(
-        model=get_model("anthropic:claude-sonnet-4"),
-        context=Context(
-            systemPrompt="你是一个技术文档助手。",
-            messages=[
-                UserMessage(content="解释一下为什么 stream 要返回队列会话。"),
-                ToolResultMessage(
-                    toolCallId="call_1",
-                    toolName="lookup_spec",
-                    content='{"summary":"队列可以隔离生产和消费速度"}',
-                ),
-            ],
-            tools=[],
-        ),
-        reasoning="medium",
-        max_tokens=300,
-    )
-    print(message.content)
-    print(message.thinking)
-
-
-asyncio.run(main())
-```
-
-## Lazy Registry
-
-推荐通过懒加载 registry 管理 provider：
-
-```python
-from ai.registry import ProviderRegistry
-from ai.providers.openai import OpenAIProvider
-from ai.providers.anthropic import AnthropicProvider
-
-registry = ProviderRegistry()
-registry.register_factory("openai", OpenAIProvider)
-registry.register_factory("anthropic", AnthropicProvider)
-```
-
-`resolve(model)` 应在首次命中 provider 时才实例化适配器，并缓存后续复用。
-
-## Queue Model
-
-上层语义现在以生产者-消费者模式为主：
-- provider 仍可产出 async iterator 事件
-- client 负责把 provider 事件桥接到有界 queue
-- 上层直接从 `StreamSession.queue` 或 `StreamSession.consume()` 取事件
-- 结束仍通过 `done` / `error` 事件表达，不引入额外哨兵对象
-
-推荐约束：
-- queue 为有界队列
-- 消费者慢时触发背压
-- `done.assistantMessage` 与 `complete()` 返回值语义一致
-
-## Cross-Provider Conversion
-
-当 `Context.messages` 中包含来自其他 provider 的 assistant/tool 历史消息时，调用链应在进入目标 provider 前完成兼容转换。建议由 `ai.converters.messages` 与 `ai.converters.tools` 统一处理：
-
-- 历史 `AssistantMessage.toolCalls` 转成目标 provider 可消费格式
-- `ToolResultMessage` 转成目标 provider 所需 tool result 形态
-- `Tool.inputSchema` 转成目标 provider 请求结构
-- 不支持保真的字段按约定降级，而不是让 provider 请求直接失效
-
-## Reasoning Mapping
-
-统一 `reasoning` 级别：
-- `low`
-- `medium`
-- `high`
-
-在运行时应通过 `ai.reasoning` 映射到各 provider 的具体参数：
-- OpenAI：`reasoning.effort`
-- Anthropic：`thinking.budget_tokens`
-
-## Utils
-
-`ai.utils` 目录应至少包含这些模块：
-- `ai.utils.streaming`：统一事件构造、queue 辅助与 `done` 聚合
-- `ai.utils.schema_validation`：AJV 等价的 Python JSON Schema 校验能力
-- `ai.utils.context_window`：上下文窗口估算与溢出检测
-- `ai.utils.unicode`：安全规范化、零宽/控制字符清理
-
-推荐能力接口：
-- `validate_tool_arguments(tool, arguments)`
-- `detect_context_overflow(model, context, options)`
-- `sanitize_unicode(text)`
-
-## Streaming Event Protocol
-
-统一事件类型如下：
-- `start`
-- `text_start`
-- `text_delta`
-- `text_end`
-- `thinking_start`
-- `thinking_delta`
-- `thinking_end`
-- `toolcall_start`
-- `toolcall_delta`
-- `toolcall_end`
-- `done`
-- `error`
-
-`done` 事件必须携带完整最终结果对象，因此流式调用方可以直接消费 `done`，而 `complete()` 则会基于相同协议做聚合。
-
-## Public Types
-
-推荐上层直接依赖这些公开类型：
-- `Context`
-- `UserMessage`
-- `AssistantMessage`
-- `ToolResultMessage`
-- `Tool`
-- `ToolCall`
-- `Model`
-- `Options`
-- `StreamEvent`
-- `StreamSession`
-- `AgentState`
-- `AgentEvent`
-- `AgentLoopConfig`
-- `AgentContext`
-- `AgentStreamFn`
-- `AgentTool`
-
-## Documentation Notes
-
-该模块面向上层团队使用，公共函数应提供中文 docstring，至少覆盖：
-- 函数用途
-- 参数含义
-- 返回值
-- 异常或使用注意事项
-
-如果某个公开 API 缺少中文 docstring，应视为待补齐项。
+- 想看底层模型协议：先读 `ai`
+- 想看 Agent 多轮循环：先读 `agent_core`
+- 想看终端应用如何装配：先读 `coding_agent`
+- 想看行为边界和当前契约：直接读 `tests/`
