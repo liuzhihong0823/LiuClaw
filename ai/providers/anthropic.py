@@ -4,6 +4,7 @@ import os
 from collections.abc import AsyncIterator
 from typing import Any
 
+from ai.config import ProviderConfig
 from ai.errors import AuthenticationError, ProviderResponseError
 from ai.options import Options
 from ai.providers.base import Provider
@@ -36,21 +37,38 @@ class AnthropicProvider(Provider):
         model_id = self._model_id(model)
         return model_id.split(":", 1)[1] if model_id.startswith("anthropic:") else model_id
 
-    def _require_api_key(self) -> str:
+    def _require_api_key(self, model: Any | None = None) -> str:
         """确保 Anthropic API Key 已配置。"""
 
-        api_key = os.getenv("ANTHROPIC_API_KEY")
+        config = self._runtime_config(model)
+        api_key = config.resolve_api_key() or os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
             raise AuthenticationError("ANTHROPIC_API_KEY is not set")
         return api_key
 
-    def _client_kwargs(self, options: Options) -> dict[str, Any]:
+    def _runtime_config(self, model: Any | None = None) -> ProviderConfig:
+        """返回当前 provider 的运行时配置视图。"""
+
+        provider_config = getattr(model, "providerConfig", {}) if model is not None else {}
+        merged = ProviderConfig(name=self.name)
+        if self.config is not None:
+            merged = ProviderConfig(**{**merged.__dict__, **self.config.__dict__})
+        if provider_config:
+            merged.baseUrl = provider_config.get("baseUrl", merged.baseUrl)
+            merged.apiKey = provider_config.get("apiKey", merged.apiKey)
+            merged.apiKeyEnv = provider_config.get("apiKeyEnv", merged.apiKeyEnv)
+            merged.headers = {**merged.headers, **provider_config.get("headers", {})}
+            merged.providerOverrides = {**merged.providerOverrides, **provider_config}
+        return merged
+
+    def _client_kwargs(self, options: Options, model: Any | None = None) -> dict[str, Any]:
         """构造 Anthropic SDK 客户端初始化参数。"""
 
+        config = self._runtime_config(model)
         return {
-            "api_key": self._require_api_key(),
+            "api_key": self._require_api_key(model),
             "timeout": options.timeout,
-            "base_url": os.getenv("ANTHROPIC_BASE_URL"),
+            "base_url": config.baseUrl or os.getenv("ANTHROPIC_BASE_URL"),
         }
 
     def _context_tools(self, context: Any) -> list[Any]:
@@ -168,7 +186,7 @@ class AnthropicProvider(Provider):
             )
             return
 
-        client = AsyncAnthropic(**self._client_kwargs(options))
+        client = AsyncAnthropic(**self._client_kwargs(options, model))
         builder = EventBuilder(model=model, provider=self.name)
         final_message = AssistantMessage(content=[], metadata={})
         tool_buffers: dict[str, str] = {}

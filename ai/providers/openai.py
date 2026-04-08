@@ -4,6 +4,7 @@ import os
 from collections.abc import AsyncIterator
 from typing import Any
 
+from ai.config import ProviderConfig
 from ai.errors import AuthenticationError, ProviderResponseError
 from ai.options import Options
 from ai.providers.base import Provider
@@ -36,21 +37,38 @@ class OpenAIProvider(Provider):
         model_id = self._model_id(model)
         return model_id.split(":", 1)[1] if model_id.startswith("openai:") else model_id
 
-    def _require_api_key(self) -> str:
+    def _require_api_key(self, model: Any | None = None) -> str:
         """确保 OpenAI API Key 已配置。"""
 
-        api_key = os.getenv("OPENAI_API_KEY")
+        config = self._runtime_config(model)
+        api_key = config.resolve_api_key() or os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise AuthenticationError("OPENAI_API_KEY is not set")
         return api_key
 
-    def _client_kwargs(self, options: Options) -> dict[str, Any]:
+    def _runtime_config(self, model: Any | None = None) -> ProviderConfig:
+        """返回当前 provider 的运行时配置视图。"""
+
+        provider_config = getattr(model, "providerConfig", {}) if model is not None else {}
+        merged = ProviderConfig(name=self.name)
+        if self.config is not None:
+            merged = ProviderConfig(**{**merged.__dict__, **self.config.__dict__})
+        if provider_config:
+            merged.baseUrl = provider_config.get("baseUrl", merged.baseUrl)
+            merged.apiKey = provider_config.get("apiKey", merged.apiKey)
+            merged.apiKeyEnv = provider_config.get("apiKeyEnv", merged.apiKeyEnv)
+            merged.headers = {**merged.headers, **provider_config.get("headers", {})}
+            merged.providerOverrides = {**merged.providerOverrides, **provider_config}
+        return merged
+
+    def _client_kwargs(self, options: Options, model: Any | None = None) -> dict[str, Any]:
         """构造 OpenAI SDK 客户端初始化参数。"""
 
+        config = self._runtime_config(model)
         return {
-            "api_key": self._require_api_key(),
+            "api_key": self._require_api_key(model),
             "timeout": options.timeout,
-            "base_url": os.getenv("OPENAI_BASE_URL"),
+            "base_url": config.baseUrl or os.getenv("OPENAI_BASE_URL"),
         }
 
     def _context_tools(self, context: Any) -> list[Any]:
@@ -113,7 +131,7 @@ class OpenAIProvider(Provider):
                     "type": "function",
                     "function": {
                         "name": tool_call.name,
-                        "arguments": tool_call.arguments,
+                        "arguments": tool_call.arguments_text,
                     },
                 }
                 for tool_call in tool_calls
@@ -170,7 +188,7 @@ class OpenAIProvider(Provider):
             )
             return
 
-        client = AsyncOpenAI(**self._client_kwargs(options))
+        client = AsyncOpenAI(**self._client_kwargs(options, model))
         builder = EventBuilder(model=model, provider=self.name)
         final_message = AssistantMessage(content=[], metadata={})
         tool_buffers: dict[str, str] = {}
@@ -239,3 +257,16 @@ class OpenAIProvider(Provider):
         except Exception as exc:  # pragma: no cover
             error = exc if isinstance(exc, ProviderResponseError) else ProviderResponseError(f"OpenAI streaming failed: {exc}")
             yield builder.build_error(str(error), metadata={"source": "provider", "provider": self.name, "exception_type": type(exc).__name__})
+
+
+class OpenAICompatibleProvider(OpenAIProvider):
+    """用于快速接入 OpenAI 兼容协议服务的 provider。"""
+
+    name = "openai_compatible"
+
+    def supports(self, model: Any) -> bool:
+        model_id = self._model_id(model)
+        provider = getattr(model, "provider", None)
+        if provider:
+            return provider == self.name
+        return model_id.startswith("openai_compatible:") or model_id.startswith("openai-compatible:")

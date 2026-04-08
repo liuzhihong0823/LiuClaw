@@ -3,21 +3,24 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from typing import Any
 
+from .config import ProviderConfig
 from .errors import ProviderNotFoundError
+from .model_registry import DEFAULT_MODEL_REGISTRY, ModelRegistry
 from .providers.base import Provider
 
-ProviderFactory = Callable[[], Provider]
+ProviderFactory = Callable[..., Provider]
 
 
 def _default_factories() -> dict[str, ProviderFactory]:
     """返回内置 provider 的默认工厂映射。"""
 
     from .providers.anthropic import AnthropicProvider
-    from .providers.openai import OpenAIProvider
+    from .providers.openai import OpenAICompatibleProvider, OpenAIProvider
     from .providers.zhipu import ZhipuProvider
 
     return {
         "openai": OpenAIProvider,
+        "openai_compatible": OpenAICompatibleProvider,
         "anthropic": AnthropicProvider,
         "zhipu": ZhipuProvider,
     }
@@ -31,11 +34,15 @@ class ProviderRegistry:
         providers: Iterable[Provider] | None = None,
         *,
         factories: dict[str, ProviderFactory] | None = None,
+        provider_configs: dict[str, ProviderConfig] | None = None,
+        model_registry: ModelRegistry | None = None,
     ) -> None:
         """初始化注册表，并预注册内置工厂或已有实例。"""
 
         self._factories: dict[str, ProviderFactory] = dict(factories or _default_factories())
         self._instances: dict[str, Provider] = {}
+        self._provider_configs: dict[str, ProviderConfig] = dict(provider_configs or {})
+        self._model_registry = model_registry or DEFAULT_MODEL_REGISTRY
         for provider in providers or []:
             self.register(provider)
 
@@ -51,15 +58,29 @@ class ProviderRegistry:
 
         return dict(self._factories)
 
+    @property
+    def provider_configs(self) -> dict[str, ProviderConfig]:
+        """返回 provider 配置映射副本。"""
+
+        return dict(self._provider_configs)
+
     def register(self, provider: Provider) -> None:
         """注册一个已经构造完成的 provider 实例。"""
 
+        provider.set_config(self._provider_configs.get(provider.name) or self._model_registry.get_provider_config(provider.name))
         self._instances[provider.name] = provider
 
     def register_factory(self, name: str, factory: ProviderFactory) -> None:
         """注册一个按需实例化的 provider 工厂。"""
 
         self._factories[name] = factory
+
+    def register_provider_config(self, config: ProviderConfig) -> None:
+        """注册一个 provider 级配置，并同步到已实例化 provider。"""
+
+        self._provider_configs[config.name] = config
+        if config.name in self._instances:
+            self._instances[config.name].set_config(config)
 
     def get_provider(self, model: Any) -> Provider:
         """根据模型解析 provider，并在首次使用时完成懒加载。"""
@@ -103,7 +124,12 @@ class ProviderRegistry:
             factory = self._factories[name]
         except KeyError as exc:
             raise ProviderNotFoundError(f"No provider factory registered for '{name}'") from exc
-        provider = factory()
+        provider_config = self._provider_configs.get(name) or self._model_registry.get_provider_config(name)
+        try:
+            provider = factory(config=provider_config)
+        except TypeError:
+            provider = factory()
+            provider.set_config(provider_config)
         self._instances[name] = provider
         return provider
 

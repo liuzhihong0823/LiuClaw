@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from .types import ReasoningLevel
+
+ContextOverflowStrategy = Literal["reject", "truncate_oldest"]
 
 
 @dataclass(slots=True)
@@ -25,6 +27,9 @@ class Options:
     includeRawProviderEvents: bool = False
     streamQueueMaxSize: int = 64
     streamPutTimeout: float | None = None
+    contextOverflowStrategy: ContextOverflowStrategy = "reject"
+    debug: dict[str, Any] = field(default_factory=dict)
+    provider: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

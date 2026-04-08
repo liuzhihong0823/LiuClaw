@@ -3,7 +3,9 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from ..types import AssistantMessage, Context, ToolCall, ToolResultMessage, UserMessage, ensure_context
+from ..types import AssistantMessage, Context, ToolResultMessage, UserMessage, ensure_context
+from .capabilities import apply_model_capabilities
+from .thinking import convert_thinking_for_provider
 from .tools import convert_tools_for_provider
 
 _KNOWN_PROVIDERS = {"openai", "anthropic", "zhipu"}
@@ -13,6 +15,8 @@ def convert_context_for_provider(model: Any, context: Context | dict[str, Any]) 
     """将统一 `Context` 转换为目标 provider 可消费的兼容上下文。"""
 
     normalized = ensure_context(context)
+    normalized = apply_model_capabilities(model, normalized)
+    normalized = convert_thinking_for_provider(model, normalized)
     provider = getattr(model, "provider", None)
     if provider not in _KNOWN_PROVIDERS:
         return normalized
@@ -70,18 +74,4 @@ def _convert_assistant_message(provider: str | None, message: AssistantMessage) 
         responseId=message.responseId,
         errorMessage=message.errorMessage,
         timestamp=message.timestamp,
-    )
-
-
-
-def _convert_tool_call(provider: str | None, tool_call: ToolCall) -> ToolCall:
-    """把历史工具调用转换为目标 provider 兼容的统一工具调用。"""
-
-    metadata = dict(tool_call.metadata)
-    metadata["targetProvider"] = provider
-    return ToolCall(
-        id=tool_call.id,
-        name=tool_call.name,
-        arguments=tool_call.arguments,
-        metadata=metadata,
     )

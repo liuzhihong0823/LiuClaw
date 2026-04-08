@@ -6,11 +6,12 @@ from typing import Any
 from .converters import convert_context_for_provider
 from .errors import ProviderResponseError
 from .options import Options, ensure_options
+from .model_registry import DEFAULT_MODEL_REGISTRY, ModelRegistry
 from .reasoning import merge_reasoning_metadata
 from .registry import ProviderRegistry
 from .session import StreamSession
 from .types import AssistantMessage, Context, Model, StreamEvent, ensure_context, ensure_model
-from .utils.context_window import ensure_context_fits_window
+from .utils.context_window import ensure_context_fits_window, truncate_context_to_window
 from .utils.streaming import StreamAccumulator
 from .utils.unicode import sanitize_unicode_context
 
@@ -21,12 +22,16 @@ DEFAULT_REGISTRY = ProviderRegistry()
 def _prepare_context(
     model: Model,
     context: Context | dict[str, Any],
+    options: Options,
 ) -> Context:
     """规范化、清理并转换上下文，使其适配当前目标 provider。"""
 
     normalized = ensure_context(context)
     sanitized = sanitize_unicode_context(normalized)
-    return convert_context_for_provider(model, sanitized)
+    converted = convert_context_for_provider(model, sanitized)
+    if options.contextOverflowStrategy == "truncate_oldest":
+        return truncate_context_to_window(model, converted, options)
+    return converted
 
 
 
@@ -48,6 +53,9 @@ def _prepare_options(model: Model, options: Options | None) -> Options:
         includeRawProviderEvents=resolved.includeRawProviderEvents,
         streamQueueMaxSize=resolved.streamQueueMaxSize,
         streamPutTimeout=resolved.streamPutTimeout,
+        contextOverflowStrategy=resolved.contextOverflowStrategy,
+        debug=dict(resolved.debug),
+        provider=dict(resolved.provider),
     )
 
 
@@ -90,6 +98,7 @@ async def _produce_events(
             provider=getattr(model, "provider", None),
             error=str(exc),
             details={"source": "provider", "exception_type": type(exc).__name__},
+            metadata={"debugOnlyRawEvents": options.includeRawProviderEvents},
         )
         await _put_event(queue, error_event, put_timeout=options.streamPutTimeout)
 
@@ -100,12 +109,16 @@ async def stream(
     options: Options | None = None,
     *,
     registry: ProviderRegistry | None = None,
+    model_registry: ModelRegistry | None = None,
 ) -> StreamSession:
     """创建流式队列会话，并在后台生产统一事件。"""
 
-    normalized_model = ensure_model(model)
+    if isinstance(model, str):
+        normalized_model = (model_registry or DEFAULT_MODEL_REGISTRY).get_model(model)
+    else:
+        normalized_model = ensure_model(model)
     prepared_options = _prepare_options(normalized_model, options)
-    prepared_context = _prepare_context(normalized_model, context)
+    prepared_context = _prepare_context(normalized_model, context, prepared_options)
     ensure_context_fits_window(normalized_model, prepared_context, prepared_options)
 
     queue: asyncio.Queue[StreamEvent] = asyncio.Queue(maxsize=prepared_options.streamQueueMaxSize)
@@ -129,10 +142,11 @@ async def complete(
     options: Options | None = None,
     *,
     registry: ProviderRegistry | None = None,
+    model_registry: ModelRegistry | None = None,
 ) -> AssistantMessage:
     """消费流式队列会话，并聚合出最终 `AssistantMessage`。"""
 
-    session = await stream(model, context, options, registry=registry)
+    session = await stream(model, context, options, registry=registry, model_registry=model_registry)
     accumulator = StreamAccumulator()
     try:
         async for event in session.consume():
@@ -159,8 +173,9 @@ async def streamSimple(
     stream_queue_max_size: int = 64,
     stream_put_timeout: float | None = None,
     registry: ProviderRegistry | None = None,
+    model_registry: ModelRegistry | None = None,
 ) -> StreamSession:
-    """用简化参数构造 `Options`，再返回流式队列会话。"""
+    """兼容入口：用简化参数构造 `Options`，再返回流式队列会话。"""
 
     options = Options(
         reasoning=reasoning,
@@ -172,7 +187,7 @@ async def streamSimple(
         streamQueueMaxSize=stream_queue_max_size,
         streamPutTimeout=stream_put_timeout,
     )
-    return await stream(model, context, options, registry=registry)
+    return await stream(model, context, options, registry=registry, model_registry=model_registry)
 
 
 async def completeSimple(
@@ -188,8 +203,9 @@ async def completeSimple(
     stream_queue_max_size: int = 64,
     stream_put_timeout: float | None = None,
     registry: ProviderRegistry | None = None,
+    model_registry: ModelRegistry | None = None,
 ) -> AssistantMessage:
-    """用简化参数构造 `Options`，再消费队列会话得到最终回复。"""
+    """兼容入口：用简化参数构造 `Options`，再消费队列会话得到最终回复。"""
 
     options = Options(
         reasoning=reasoning,
@@ -201,4 +217,4 @@ async def completeSimple(
         streamQueueMaxSize=stream_queue_max_size,
         streamPutTimeout=stream_put_timeout,
     )
-    return await complete(model, context, options, registry=registry)
+    return await complete(model, context, options, registry=registry, model_registry=model_registry)

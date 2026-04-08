@@ -1,4 +1,5 @@
 from .client import complete, completeSimple, stream, streamSimple
+from .config import AIConfig, ProviderConfig, load_ai_config
 from .errors import (
     AIError,
     AuthenticationError,
@@ -6,6 +7,7 @@ from .errors import (
     ProviderResponseError,
     UnsupportedFeatureError,
 )
+from .model_registry import ModelRegistry
 from .models import get_model, list_models
 from .options import Options, ReasoningConfig, SimpleOptions
 from .registry import ProviderRegistry
@@ -29,14 +31,17 @@ from .types import (
 
 __all__ = [
     "AIError",
+    "AIConfig",
     "AssistantMessage",
     "ContentBlocks",
     "AuthenticationError",
     "Context",
     "ImageContent",
     "Model",
+    "ModelRegistry",
     "Options",
     "ProviderNotFoundError",
+    "ProviderConfig",
     "ProviderRegistry",
     "ProviderResponseError",
     "ReasoningConfig",
@@ -56,6 +61,7 @@ __all__ = [
     "completeSimple",
     "get_model",
     "list_models",
+    "load_ai_config",
     "stream",
     "streamSimple",
 ]

@@ -5,6 +5,7 @@ import os
 from collections.abc import AsyncIterator
 from typing import Any
 
+from ai.config import ProviderConfig
 from ai.errors import AuthenticationError, ProviderResponseError
 from ai.options import Options
 from ai.providers.base import Provider
@@ -38,24 +39,41 @@ class ZhipuProvider(Provider):
         model_id = self._model_id(model)
         return model_id.split(":", 1)[1] if model_id.startswith("zhipu:") else model_id
 
-    def _require_api_key(self) -> str:
+    def _require_api_key(self, model: Any | None = None) -> str:
         """确保智谱 API Key 已配置。"""
 
-        api_key = os.getenv("ZHIPU_API_KEY") or os.getenv("ZHIPUAI_API_KEY")
+        config = self._runtime_config(model)
+        api_key = config.resolve_api_key() or os.getenv("ZHIPU_API_KEY") or os.getenv("ZHIPUAI_API_KEY")
         if not api_key:
             raise AuthenticationError("ZAI_API_KEY or ZHIPUAI_API_KEY is not set")
         return api_key
 
-    def _base_url(self) -> str:
+    def _base_url(self, model: Any | None = None) -> str:
         """返回智谱 API 根地址。"""
 
-        return os.getenv("ZHIPU_BASE_URL", "https://open.bigmodel.cn/api/paas/v4").rstrip("/")
+        config = self._runtime_config(model)
+        return (config.baseUrl or os.getenv("ZHIPU_BASE_URL", "https://open.bigmodel.cn/api/paas/v4")).rstrip("/")
 
-    def _headers(self) -> dict[str, str]:
+    def _runtime_config(self, model: Any | None = None) -> ProviderConfig:
+        """返回当前 provider 的运行时配置视图。"""
+
+        provider_config = getattr(model, "providerConfig", {}) if model is not None else {}
+        merged = ProviderConfig(name=self.name)
+        if self.config is not None:
+            merged = ProviderConfig(**{**merged.__dict__, **self.config.__dict__})
+        if provider_config:
+            merged.baseUrl = provider_config.get("baseUrl", merged.baseUrl)
+            merged.apiKey = provider_config.get("apiKey", merged.apiKey)
+            merged.apiKeyEnv = provider_config.get("apiKeyEnv", merged.apiKeyEnv)
+            merged.headers = {**merged.headers, **provider_config.get("headers", {})}
+            merged.providerOverrides = {**merged.providerOverrides, **provider_config}
+        return merged
+
+    def _headers(self, model: Any | None = None) -> dict[str, str]:
         """构造智谱请求头。"""
 
         return {
-            "Authorization": f"Bearer {self._require_api_key()}",
+            "Authorization": f"Bearer {self._require_api_key(model)}",
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
         }
@@ -127,7 +145,7 @@ class ZhipuProvider(Provider):
                     "type": "function",
                     "function": {
                         "name": tool_call.name,
-                        "arguments": tool_call.arguments,
+                        "arguments": tool_call.arguments_text,
                     },
                 }
                 for tool_call in tool_calls
@@ -170,6 +188,7 @@ class ZhipuProvider(Provider):
 
     async def _iter_sse_chunks(
         self,
+        model: Any,
         request: dict[str, Any],
         *,
         timeout: float | None,
@@ -181,9 +200,9 @@ class ZhipuProvider(Provider):
         except ImportError as exc:
             raise ProviderResponseError("httpx package is not installed") from exc
 
-        url = f"{self._base_url()}/chat/completions"
+        url = f"{self._base_url(model)}/chat/completions"
         async with httpx.AsyncClient(timeout=timeout) as client:
-            async with client.stream("POST", url, headers=self._headers(), json=request) as response:
+            async with client.stream("POST", url, headers=self._headers(model), json=request) as response:
                 if response.status_code >= 400:
                     text = await response.aread()
                     raise ProviderResponseError(
@@ -263,7 +282,7 @@ class ZhipuProvider(Provider):
 
         try:
             yield builder.build("start", lifecycle="start", itemType="message")
-            async for chunk in self._iter_sse_chunks(request, timeout=options.timeout):
+            async for chunk in self._iter_sse_chunks(model, request, timeout=options.timeout):
                 raw_event = chunk if options.includeRawProviderEvents else None
                 response_id = chunk.get("id", response_id)
                 choices = chunk.get("choices") or []

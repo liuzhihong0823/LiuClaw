@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from .errors import ProviderNotFoundError
 from .types import Model
 
 _MODEL_CATALOG: dict[str, Model] = {
@@ -96,17 +95,15 @@ _MODEL_CATALOG: dict[str, Model] = {
 def get_model(model_id: str) -> Model:
     """根据模型 ID 返回内置模型目录中的模型定义。"""
 
-    try:
-        return _MODEL_CATALOG[model_id]
-    except KeyError as exc:
-        raise ProviderNotFoundError(f"Unknown model '{model_id}'") from exc
+    from .model_registry import DEFAULT_MODEL_REGISTRY
+
+    return DEFAULT_MODEL_REGISTRY.get_model(model_id)
 
 
 
 def list_models(provider: str | None = None) -> list[Model]:
     """返回内置模型目录，可按 provider 过滤。"""
 
-    models = list(_MODEL_CATALOG.values())
-    if provider is None:
-        return models
-    return [model for model in models if model.provider == provider]
+    from .model_registry import DEFAULT_MODEL_REGISTRY
+
+    return DEFAULT_MODEL_REGISTRY.list_models(provider=provider)

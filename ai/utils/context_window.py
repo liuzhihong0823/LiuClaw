@@ -91,6 +91,21 @@ def ensure_context_fits_window(model: Model, context: Context, options: Options 
     return report
 
 
+def truncate_context_to_window(model: Model, context: Context, options: Options | None = None) -> Context:
+    """按最旧优先裁剪消息，直到预算回到窗口以内。"""
+
+    messages = list(context.messages)
+    while messages:
+        candidate = Context(systemPrompt=context.systemPrompt, messages=messages, tools=context.tools)
+        if not detect_context_overflow(model, candidate, options).is_overflow:
+            return candidate
+        messages.pop(0)
+    candidate = Context(systemPrompt=context.systemPrompt, messages=[], tools=context.tools)
+    if detect_context_overflow(model, candidate, options).is_overflow:
+        raise ContextOverflowError("context exceeds model window even after truncation")
+    return candidate
+
+
 
 def _estimate_message_tokens(message: UserMessage | AssistantMessage | ToolResultMessage) -> int:
     """粗略估算一条消息占用的 token 数。"""
