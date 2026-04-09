@@ -39,10 +39,10 @@ class ProviderRegistry:
     ) -> None:
         """初始化注册表，并预注册内置工厂或已有实例。"""
 
-        self._factories: dict[str, ProviderFactory] = dict(factories or _default_factories())
-        self._instances: dict[str, Provider] = {}
-        self._provider_configs: dict[str, ProviderConfig] = dict(provider_configs or {})
-        self._model_registry = model_registry or DEFAULT_MODEL_REGISTRY
+        self._factories: dict[str, ProviderFactory] = dict(factories or _default_factories())  # provider 工厂映射。
+        self._instances: dict[str, Provider] = {}  # 已实例化的 provider 缓存。
+        self._provider_configs: dict[str, ProviderConfig] = dict(provider_configs or {})  # provider 配置映射。
+        self._model_registry = model_registry or DEFAULT_MODEL_REGISTRY  # 模型注册表，用于推导 provider 配置。
         for provider in providers or []:
             self.register(provider)
 

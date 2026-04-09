@@ -22,7 +22,7 @@ class TranscriptStyleProcessor(Processor):
     def __init__(self, state: InteractiveState) -> None:
         """保存状态引用，便于按行读取样式信息。"""
 
-        self.state = state
+        self.state = state  # 当前交互状态。
 
     def apply_transformation(self, transformation_input):
         """为当前行附加统一的样式类。"""
@@ -50,7 +50,7 @@ class MainOutputBufferControl(BufferControl):
         """保存 renderer 引用，便于把滚轮事件路由到统一滚动接口。"""
 
         super().__init__(*args, **kwargs)
-        self.renderer = renderer
+        self.renderer = renderer  # 所属渲染器。
 
     def mouse_handler(self, mouse_event):
         """优先处理主输出区滚轮事件，其他事件沿用 BufferControl 默认行为。"""
@@ -73,10 +73,10 @@ class InteractiveRenderer:
     def __init__(self, state: InteractiveState) -> None:
         """初始化渲染器并保存状态对象。"""
 
-        self.state = state
-        self.application: Application | None = None
-        self.input_buffer = Buffer(multiline=True)
-        self.transcript_buffer = Buffer(read_only=True, document=Document(state.transcript_text, cursor_position=len(state.transcript_text)))
+        self.state = state  # 当前交互状态。
+        self.application: Application | None = None  # prompt_toolkit Application 实例。
+        self.input_buffer = Buffer(multiline=True)  # 用户输入缓冲区。
+        self.transcript_buffer = Buffer(read_only=True, document=Document(state.transcript_text, cursor_position=len(state.transcript_text)))  # 主输出只读缓冲区。
         self.main_control = MainOutputBufferControl(
             self,
             buffer=self.transcript_buffer,
@@ -85,11 +85,11 @@ class InteractiveRenderer:
             include_default_input_processors=False,
             input_processors=[TranscriptStyleProcessor(state)],
         )
-        self.main_window = Window(self.main_control, wrap_lines=True, always_hide_cursor=True)
-        self.sidebar_window = Window(FormattedTextControl(self._render_sidebar), width=Dimension(preferred=36), wrap_lines=True)
-        self.input_window = Window(BufferControl(buffer=self.input_buffer), height=Dimension(min=3, preferred=5), wrap_lines=True)
-        self._pending_follow_after_render = False
-        self._last_main_height = 0
+        self.main_window = Window(self.main_control, wrap_lines=True, always_hide_cursor=True)  # 主输出窗口。
+        self.sidebar_window = Window(FormattedTextControl(self._render_sidebar), width=Dimension(preferred=36), wrap_lines=True)  # 侧边栏窗口。
+        self.input_window = Window(BufferControl(buffer=self.input_buffer), height=Dimension(min=3, preferred=5), wrap_lines=True)  # 输入窗口。
+        self._pending_follow_after_render = False  # 下次渲染后是否需要跟随到底部。
+        self._last_main_height = 0  # 上次记录的主窗口高度。
 
     def build_application(self, controller) -> Application:
         """创建完整的 prompt_toolkit Application。"""

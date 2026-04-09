@@ -46,27 +46,27 @@ class AgentSession:
     ) -> None:
         """初始化一次 coding-agent 会话运行时。"""
 
-        self.workspace_root = workspace_root
-        self.cwd = cwd
-        self.model = model
-        self.thinking = thinking
-        self.settings = settings
-        self.session_manager = session_manager
-        self.resource_loader = resource_loader
-        self.session_id = session_id
-        self.branch_id = branch_id
-        self.last_node_id: str | None = None
-        self._event_message_counter = 0
-        self._current_assistant_message_id = ""
-        self._turn_counter = 0
-        self._current_turn_id = ""
-        self._pending_control_messages: list[ControlMessage] = []
-        self._tool_activity_in_run = False
-        self._follow_up_sent = False
-        self.runtime = self._assemble_runtime(provider_registry=registry)
-        self.compaction: CompactionCoordinator = self.runtime.compaction
-        self._stream_fn = stream_fn
-        self._agent = self._build_agent()
+        self.workspace_root = workspace_root  # 工作区根目录。
+        self.cwd = cwd  # 当前会话目录。
+        self.model = model  # 当前模型对象。
+        self.thinking = thinking  # 当前思考等级。
+        self.settings = settings  # 会话生效设置。
+        self.session_manager = session_manager  # 会话持久化管理器。
+        self.resource_loader = resource_loader  # 资源加载器。
+        self.session_id = session_id  # 当前会话 ID。
+        self.branch_id = branch_id  # 当前分支 ID。
+        self.last_node_id: str | None = None  # 最近写入的会话节点 ID。
+        self._event_message_counter = 0  # 生成事件消息 ID 的计数器。
+        self._current_assistant_message_id = ""  # 当前 assistant 消息 ID。
+        self._turn_counter = 0  # turn 计数器。
+        self._current_turn_id = ""  # 当前处理中的 turn ID。
+        self._pending_control_messages: list[ControlMessage] = []  # 待注入的控制消息。
+        self._tool_activity_in_run = False  # 本轮是否发生过工具调用。
+        self._follow_up_sent = False  # 本轮是否已经发出 follow-up。
+        self.runtime = self._assemble_runtime(provider_registry=registry)  # 当前 session 装配出的运行时组件。
+        self.compaction: CompactionCoordinator = self.runtime.compaction  # 上下文压缩协调器。
+        self._stream_fn = stream_fn  # 自定义底层流式函数。
+        self._agent = self._build_agent()  # 底层高层 Agent 封装对象。
         if self.session_id is None:
             snapshot = self.session_manager.create_session(cwd=cwd, model_id=model.id)
             self.session_id = snapshot.session_id

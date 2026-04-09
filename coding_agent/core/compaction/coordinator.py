@@ -16,9 +16,9 @@ class CompactionCoordinator:
     def __init__(self, session_manager: SessionManager, settings: CodingAgentSettings, keep_turns: int | None = None) -> None:
         """初始化压缩协调器。"""
 
-        self.session_manager = session_manager
-        self.settings = settings
-        self.compactor = SessionCompactor(session_manager, keep_turns=keep_turns or settings.compact_keep_turns)
+        self.session_manager = session_manager  # 会话管理器。
+        self.settings = settings  # 当前压缩相关设置。
+        self.compactor = SessionCompactor(session_manager, keep_turns=keep_turns or settings.compact_keep_turns)  # 实际执行压缩的对象。
 
     def compact_manual(self, session_id: str, branch_id: str | None = None) -> CompactResult:
         """手动触发压缩。"""

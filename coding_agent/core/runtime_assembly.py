@@ -20,13 +20,13 @@ from .types import CodingAgentSettings, ResourceBundle, SessionContext
 class SessionRuntimeAssembly:
     """表示一次 session runtime 装配后的稳定组件集合。"""
 
-    resources: ResourceBundle
-    tool_registry: ToolRegistry
-    tools: list[AgentTool]
-    provider_registry: ProviderRegistry
-    prompt_builder: SystemPromptBuilder
-    compaction: CompactionCoordinator
-    listeners: list[Callable[[Any], Any]]
+    resources: ResourceBundle  # 已加载资源集合。
+    tool_registry: ToolRegistry  # 工具注册表。
+    tools: list[AgentTool]  # 当前激活的工具列表。
+    provider_registry: ProviderRegistry  # provider 注册表。
+    prompt_builder: SystemPromptBuilder  # 系统提示构造器。
+    compaction: CompactionCoordinator  # 上下文压缩协调器。
+    listeners: list[Callable[[Any], Any]]  # 扩展或运行时注册的监听器。
 
 
 def assemble_session_runtime(

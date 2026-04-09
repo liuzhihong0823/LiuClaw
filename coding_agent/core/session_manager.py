@@ -18,7 +18,7 @@ class SessionManager:
     def __init__(self, sessions_dir: Path) -> None:
         """初始化会话根目录。"""
 
-        self.sessions_dir = sessions_dir
+        self.sessions_dir = sessions_dir  # 会话数据根目录。
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
 
     def create_session(self, *, cwd: Path, model_id: str, title: str | None = None) -> SessionSnapshot:

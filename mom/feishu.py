@@ -40,14 +40,14 @@ def _normalize_text_message(text: str) -> str:
 class FeishuConfig:
     """飞书接入配置，包含鉴权参数和服务监听方式。"""
 
-    app_id: str
-    app_secret: str
-    connection_mode: str = "long_connection"
-    verification_token: str = ""
-    encrypt_key: str = ""
-    bind_host: str = "127.0.0.1"
-    bind_port: int = 8123
-    base_url: str = "https://open.feishu.cn/open-apis"
+    app_id: str  # 飞书应用 App ID。
+    app_secret: str  # 飞书应用密钥。
+    connection_mode: str = "long_connection"  # 接入模式。
+    verification_token: str = ""  # webhook 校验 token。
+    encrypt_key: str = ""  # webhook/长连接加密 key。
+    bind_host: str = "127.0.0.1"  # webhook 监听地址。
+    bind_port: int = 8123  # webhook 监听端口。
+    base_url: str = "https://open.feishu.cn/open-apis"  # 飞书 OpenAPI 基础地址。
 
 
 class FeishuBotTransport:

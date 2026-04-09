@@ -19,9 +19,9 @@ from .types import ChannelState, ChatEvent, MomRenderConfig
 class MomConfig:
     """mom 应用配置，负责承载工作区与飞书接入参数。"""
 
-    workspace_root: Path
-    feishu: FeishuConfig
-    model_id: str | None = None
+    workspace_root: Path  # mom 工作区根目录。
+    feishu: FeishuConfig  # 飞书接入配置。
+    model_id: str | None = None  # 指定使用的模型 ID，可为空。
 
     @classmethod
     def from_env(cls) -> "MomConfig":

@@ -13,14 +13,14 @@ PROJECT_DIRNAME = ".LiuClaw"
 class AgentPaths:
     """定义 coding-agent 在用户目录下使用的全部路径。"""
 
-    root: Path
-    settings_file: Path
-    models_file: Path
-    sessions_dir: Path
-    skills_dir: Path
-    prompts_dir: Path
-    themes_dir: Path
-    extensions_dir: Path
+    root: Path  # coding-agent 用户级根目录。
+    settings_file: Path  # 全局设置文件路径。
+    models_file: Path  # 用户自定义模型文件路径。
+    sessions_dir: Path  # 会话持久化目录。
+    skills_dir: Path  # 技能目录。
+    prompts_dir: Path  # 提示模板目录。
+    themes_dir: Path  # 主题目录。
+    extensions_dir: Path  # 扩展目录。
 
     def ensure_exists(self) -> None:
         """确保配置目录及默认配置文件存在。"""

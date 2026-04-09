@@ -26,8 +26,8 @@ class ModelRegistry:
         provider_configs: dict[str, ProviderConfig] | None = None,
         ai_config: AIConfig | None = None,
     ) -> None:
-        self._models = dict(models or _default_model_catalog())
-        self._provider_configs = dict(provider_configs or {})
+        self._models = dict(models or _default_model_catalog())  # 当前可用模型目录。
+        self._provider_configs = dict(provider_configs or {})  # provider 配置映射。
         if ai_config is not None:
             self.merge_ai_config(ai_config)
 

@@ -45,49 +45,49 @@ _REASONING_ORDER: tuple[ReasoningLevel, ...] = ("off", "minimal", "low", "medium
 class TextContent:
     """统一文本内容块。"""
 
-    type: Literal["text"] = "text"
-    text: str = ""
+    type: Literal["text"] = "text"  # 内容块类型标记。
+    text: str = ""  # 文本正文。
 
 
 @dataclass(slots=True)
 class ThinkingContent:
     """统一思考内容块。"""
 
-    type: Literal["thinking"] = "thinking"
-    thinking: str = ""
+    type: Literal["thinking"] = "thinking"  # 内容块类型标记。
+    thinking: str = ""  # 思考文本。
 
 
 @dataclass(slots=True)
 class ImageContent:
     """统一图片内容块。"""
 
-    type: Literal["image"] = "image"
-    data: str = ""
-    mimeType: str = "image/png"
-    detail: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
+    type: Literal["image"] = "image"  # 内容块类型标记。
+    data: str = ""  # 图片数据，通常是 base64 或可传输内容。
+    mimeType: str = "image/png"  # 图片 MIME 类型。
+    detail: str | None = None  # 图片细节等级或渲染提示。
+    metadata: dict[str, Any] = field(default_factory=dict)  # 附加图片元数据。
 
 
 @dataclass(slots=True)
 class ToolResultContent:
     """统一工具结果内容块。"""
 
-    type: Literal["tool_result_content"] = "tool_result_content"
-    text: str = ""
-    data: str | None = None
-    mimeType: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
+    type: Literal["tool_result_content"] = "tool_result_content"  # 内容块类型标记。
+    text: str = ""  # 工具结果的人类可读文本。
+    data: str | None = None  # 原始结构化结果或附件引用。
+    mimeType: str | None = None  # 原始结果 MIME 类型。
+    metadata: dict[str, Any] = field(default_factory=dict)  # 工具结果附加元信息。
 
 
 @dataclass(slots=True)
 class Tool:
     """定义可供模型调用的工具。"""
 
-    name: str
-    description: str | None = None
-    inputSchema: dict[str, Any] = field(default_factory=dict)
-    metadata: dict[str, Any] = field(default_factory=dict)
-    renderMetadata: dict[str, Any] = field(default_factory=dict)
+    name: str  # 工具名。
+    description: str | None = None  # 工具描述。
+    inputSchema: dict[str, Any] = field(default_factory=dict)  # 工具参数 JSON Schema。
+    metadata: dict[str, Any] = field(default_factory=dict)  # 工具内部元信息。
+    renderMetadata: dict[str, Any] = field(default_factory=dict)  # 工具展示层元信息。
 
 
 def serialize_tool_arguments(arguments: Any) -> str:
@@ -119,10 +119,10 @@ def parse_tool_arguments(arguments: Any) -> Any:
 class ToolCall:
     """表示 assistant 发起的一次工具调用。"""
 
-    id: str
-    name: str
-    arguments: Any = field(default_factory=dict)
-    metadata: dict[str, Any] = field(default_factory=dict)
+    id: str  # 工具调用唯一 ID。
+    name: str  # 被调用工具名。
+    arguments: Any = field(default_factory=dict)  # 工具参数，归一化后可为字典或字符串。
+    metadata: dict[str, Any] = field(default_factory=dict)  # 工具调用元信息。
 
     def __post_init__(self) -> None:
         self.arguments = parse_tool_arguments(self.arguments)
@@ -138,11 +138,11 @@ class ToolCall:
 class ToolCallContent:
     """统一工具调用内容块。"""
 
-    type: Literal["tool_call"] = "tool_call"
-    id: str = ""
-    name: str = ""
-    arguments: Any = field(default_factory=dict)
-    metadata: dict[str, Any] = field(default_factory=dict)
+    type: Literal["tool_call"] = "tool_call"  # 内容块类型标记。
+    id: str = ""  # 工具调用 ID。
+    name: str = ""  # 工具名。
+    arguments: Any = field(default_factory=dict)  # 工具参数内容。
+    metadata: dict[str, Any] = field(default_factory=dict)  # 工具调用元信息。
 
     def __post_init__(self) -> None:
         self.arguments = parse_tool_arguments(self.arguments)
@@ -275,10 +275,10 @@ def _now_ms() -> int:
 class UserMessage:
     """表示用户输入消息。"""
 
-    role: Literal["user"] = "user"
-    content: ContentBlocks = field(default_factory=ContentBlocks)
-    metadata: dict[str, Any] = field(default_factory=dict)
-    timestamp: int = field(default_factory=_now_ms)
+    role: Literal["user"] = "user"  # 消息角色。
+    content: ContentBlocks = field(default_factory=ContentBlocks)  # 用户消息内容块。
+    metadata: dict[str, Any] = field(default_factory=dict)  # 用户消息元信息。
+    timestamp: int = field(default_factory=_now_ms)  # 消息创建时间戳（毫秒）。
 
     def __post_init__(self) -> None:
         self.content = ContentBlocks(normalize_user_content_blocks(self.content))
@@ -294,14 +294,14 @@ class UserMessage:
 class AssistantMessage:
     """表示 assistant 消息，也是 `complete()` 的最终结果对象。"""
 
-    role: Literal["assistant"] = "assistant"
-    content: ContentBlocks = field(default_factory=ContentBlocks)
-    metadata: dict[str, Any] = field(default_factory=dict)
-    usage: dict[str, Any] | None = None
-    stopReason: str | None = None
-    responseId: str | None = None
-    errorMessage: str | None = None
-    timestamp: int = field(default_factory=_now_ms)
+    role: Literal["assistant"] = "assistant"  # 消息角色。
+    content: ContentBlocks = field(default_factory=ContentBlocks)  # assistant 输出内容块。
+    metadata: dict[str, Any] = field(default_factory=dict)  # assistant 消息元信息。
+    usage: dict[str, Any] | None = None  # token 使用量等统计数据。
+    stopReason: str | None = None  # provider 返回的停止原因。
+    responseId: str | None = None  # provider 侧响应 ID。
+    errorMessage: str | None = None  # 错误场景下记录的错误消息。
+    timestamp: int = field(default_factory=_now_ms)  # 消息创建时间戳（毫秒）。
 
     def __init__(
         self,
@@ -361,14 +361,14 @@ class AssistantMessage:
 class ToolResultMessage:
     """表示工具执行结果消息，供上层回填给模型。"""
 
-    role: Literal["tool"] = "tool"
-    toolCallId: str = ""
-    toolName: str = ""
-    content: ContentBlocks = field(default_factory=ContentBlocks)
-    metadata: dict[str, Any] = field(default_factory=dict)
-    isError: bool = False
-    details: Any | None = None
-    timestamp: int = field(default_factory=_now_ms)
+    role: Literal["tool"] = "tool"  # 消息角色。
+    toolCallId: str = ""  # 对应的工具调用 ID。
+    toolName: str = ""  # 工具名。
+    content: ContentBlocks = field(default_factory=ContentBlocks)  # 工具执行结果内容块。
+    metadata: dict[str, Any] = field(default_factory=dict)  # 工具结果元信息。
+    isError: bool = False  # 当前结果是否表示错误。
+    details: Any | None = None  # 附加调试细节或原始结果。
+    timestamp: int = field(default_factory=_now_ms)  # 消息创建时间戳（毫秒）。
 
     def __post_init__(self) -> None:
         self.content = ContentBlocks(normalize_tool_result_content_blocks(self.content))
@@ -387,18 +387,18 @@ ConversationMessage: TypeAlias = UserMessage | AssistantMessage | ToolResultMess
 class Model:
     """描述一个可供统一接入层使用的模型元数据。"""
 
-    id: str
-    provider: str
-    inputPrice: float
-    outputPrice: float
-    contextWindow: int
-    maxOutputTokens: int
-    metadata: dict[str, Any] = field(default_factory=dict)
-    supports_reasoning_levels: tuple[ReasoningLevel, ...] = ("off", "minimal", "low", "medium", "high")
-    supports_images: bool = False
-    supports_prompt_cache: bool = False
-    supports_session: bool = False
-    providerConfig: dict[str, Any] = field(default_factory=dict)
+    id: str  # 模型唯一 ID。
+    provider: str  # 归属 provider 名称。
+    inputPrice: float  # 输入 token 单价。
+    outputPrice: float  # 输出 token 单价。
+    contextWindow: int  # 模型上下文窗口大小。
+    maxOutputTokens: int  # 单次输出最大 token 数。
+    metadata: dict[str, Any] = field(default_factory=dict)  # 模型附加元信息。
+    supports_reasoning_levels: tuple[ReasoningLevel, ...] = ("off", "minimal", "low", "medium", "high")  # 支持的 reasoning 等级。
+    supports_images: bool = False  # 是否支持图片输入/输出相关能力。
+    supports_prompt_cache: bool = False  # 是否支持 prompt cache。
+    supports_session: bool = False  # 是否支持 provider 原生会话。
+    providerConfig: dict[str, Any] = field(default_factory=dict)  # provider 专属配置。
 
     def clamp_reasoning(self, reasoning: ReasoningLevel | None) -> ReasoningLevel | None:
         """按模型能力收敛 reasoning 级别。"""
@@ -423,9 +423,9 @@ class Model:
 class Context:
     """描述一次模型调用的统一上下文。"""
 
-    systemPrompt: str | None = None
-    messages: list[ConversationMessage | dict[str, Any]] = field(default_factory=list)
-    tools: list[Tool | dict[str, Any]] = field(default_factory=list)
+    systemPrompt: str | None = None  # 系统提示词。
+    messages: list[ConversationMessage | dict[str, Any]] = field(default_factory=list)  # 对话消息历史。
+    tools: list[Tool | dict[str, Any]] = field(default_factory=list)  # 可用工具列表。
 
     def __post_init__(self) -> None:
         self.messages = [ensure_message(item) for item in self.messages]
@@ -436,30 +436,30 @@ class Context:
 class StreamEvent:
     """定义统一流式事件对象。"""
 
-    type: StreamEventType
-    lifecycle: StreamLifecycle | None = None
-    itemType: StreamItemType | None = None
-    messageId: str | None = None
-    model: Model | None = None
-    provider: str | None = None
-    text: str | None = None
-    thinking: str | None = None
-    delta: str | None = None
-    toolCallId: str | None = None
-    toolName: str | None = None
-    argumentsDelta: str | None = None
-    arguments: Any | None = None
-    assistantMessage: AssistantMessage | None = None
-    toolResultMessage: ToolResultMessage | None = None
-    usage: dict[str, Any] | None = None
-    stopReason: str | None = None
-    responseId: str | None = None
-    error: str | None = None
-    details: Any | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-    providerMetadata: dict[str, Any] = field(default_factory=dict)
-    rawEvent: Any | None = None
-    timestamp: int = field(default_factory=_now_ms)
+    type: StreamEventType  # 事件类型。
+    lifecycle: StreamLifecycle | None = None  # 事件在当前流项中的生命周期阶段。
+    itemType: StreamItemType | None = None  # 事件对应的流项种类。
+    messageId: str | None = None  # 所属消息 ID。
+    model: Model | None = None  # 产生该事件的模型。
+    provider: str | None = None  # 产生该事件的 provider。
+    text: str | None = None  # 文本内容或文本更新。
+    thinking: str | None = None  # thinking 内容或更新。
+    delta: str | None = None  # 通用增量字段。
+    toolCallId: str | None = None  # 工具调用 ID。
+    toolName: str | None = None  # 工具名称。
+    argumentsDelta: str | None = None  # 工具参数流式增量。
+    arguments: Any | None = None  # 工具参数完整值。
+    assistantMessage: AssistantMessage | None = None  # done 事件中的完整 assistant 消息。
+    toolResultMessage: ToolResultMessage | None = None  # 工具结果消息对象。
+    usage: dict[str, Any] | None = None  # token 用量等统计。
+    stopReason: str | None = None  # 终止原因。
+    responseId: str | None = None  # provider 响应 ID。
+    error: str | None = None  # 错误文本。
+    details: Any | None = None  # 错误或事件附加细节。
+    metadata: dict[str, Any] = field(default_factory=dict)  # 通用元信息。
+    providerMetadata: dict[str, Any] = field(default_factory=dict)  # provider 专属元信息。
+    rawEvent: Any | None = None  # 原始 provider 事件对象。
+    timestamp: int = field(default_factory=_now_ms)  # 事件时间戳（毫秒）。
 
     def __post_init__(self) -> None:
         alias = _LEGACY_STREAM_EVENT_ALIASES.get(self.type)

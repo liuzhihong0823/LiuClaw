@@ -17,7 +17,7 @@ class Provider(ABC):
     def __init__(self, *, config: ProviderConfig | None = None) -> None:
         """初始化 provider，并注入 provider 级配置。"""
 
-        self.config = config
+        self.config = config  # 当前 provider 的运行时配置。
 
     def set_config(self, config: ProviderConfig | None) -> None:
         """更新 provider 级配置。"""

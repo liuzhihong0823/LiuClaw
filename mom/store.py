@@ -28,8 +28,8 @@ def build_mom_paths(workspace_root: Path) -> MomPaths:
 class MomStore:
     def __init__(self, workspace_root: Path) -> None:
         """初始化 mom 存储层，并确保工作目录结构存在。"""
-        self.workspace_root = workspace_root.resolve()
-        self.paths = build_mom_paths(self.workspace_root)
+        self.workspace_root = workspace_root.resolve()  # 规范化后的工作区根目录。
+        self.paths = build_mom_paths(self.workspace_root)  # mom 使用的路径集合。
         self.paths.ensure_exists()
 
     def channel_dir(self, chat_id: str) -> Path:

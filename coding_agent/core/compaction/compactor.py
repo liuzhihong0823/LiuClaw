@@ -12,8 +12,8 @@ class SessionCompactor:
     def __init__(self, session_manager: SessionManager, keep_turns: int = 4) -> None:
         """初始化压缩器并配置保留的最近对话轮数。"""
 
-        self.session_manager = session_manager
-        self.keep_turns = keep_turns
+        self.session_manager = session_manager  # 会话管理器。
+        self.keep_turns = keep_turns  # 压缩时保留的最近 turn 数。
 
     def compact_session(self, session_id: str, branch_id: str | None = None) -> CompactResult:
         """压缩指定会话分支的旧消息并写入摘要事件。"""

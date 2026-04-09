@@ -15,12 +15,12 @@ from .types import ExtensionCommand, ExtensionResource, ExtensionRuntime
 class ExtensionApi:
     """提供给扩展模块注册贡献能力的最小 API。"""
 
-    source: str
-    tools: list[AgentTool] = field(default_factory=list)
-    commands: list[ExtensionCommand] = field(default_factory=list)
-    provider_factories: dict[str, Any] = field(default_factory=dict)
-    event_listeners: list[Any] = field(default_factory=list)
-    prompt_fragments: list[str] = field(default_factory=list)
+    source: str  # 当前扩展来源标识。
+    tools: list[AgentTool] = field(default_factory=list)  # 扩展注册的工具。
+    commands: list[ExtensionCommand] = field(default_factory=list)  # 扩展注册的命令。
+    provider_factories: dict[str, Any] = field(default_factory=dict)  # 扩展提供的 provider 工厂。
+    event_listeners: list[Any] = field(default_factory=list)  # 扩展订阅的事件监听器。
+    prompt_fragments: list[str] = field(default_factory=list)  # 扩展追加的系统提示片段。
 
     def register_tool(self, tool: AgentTool) -> None:
         """注册一个扩展工具。"""

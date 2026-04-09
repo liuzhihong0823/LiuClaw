@@ -18,7 +18,7 @@ class CommandCompleter(Completer):
     def __init__(self, controller: "InteractiveController") -> None:
         """初始化补全器。"""
 
-        self.controller = controller
+        self.controller = controller  # 所属控制器。
 
     def get_completions(self, document, complete_event):
         """根据当前输入生成补全项。"""
@@ -55,14 +55,14 @@ class InteractiveController:
     def __init__(self, session: AgentSession, model_registry: ModelRegistry, renderer, state: InteractiveState) -> None:
         """初始化控制器与状态引用。"""
 
-        self.session = session
-        self.model_registry = model_registry
-        self.session_manager = session.session_manager
-        self.renderer = renderer
-        self.state = state
-        self.history = InMemoryHistory()
-        self.completer = CommandCompleter(self)
-        self._current_task: asyncio.Task[int] | None = None
+        self.session = session  # 当前会话对象。
+        self.model_registry = model_registry  # 模型注册表。
+        self.session_manager = session.session_manager  # 会话管理器。
+        self.renderer = renderer  # UI 渲染器。
+        self.state = state  # 交互状态。
+        self.history = InMemoryHistory()  # 输入历史。
+        self.completer = CommandCompleter(self)  # 输入补全器。
+        self._current_task: asyncio.Task[int] | None = None  # 当前正在执行的异步任务。
         if hasattr(self.renderer, "input_buffer"):
             self.renderer.input_buffer.completer = self.completer
             self.renderer.input_buffer.history = self.history

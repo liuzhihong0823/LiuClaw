@@ -16,8 +16,8 @@ class EventBuilder:
     def __init__(self, model: Model | None = None, provider: str | None = None) -> None:
         """初始化事件构造器并保存默认的模型与 provider 信息。"""
 
-        self._model = model
-        self._provider = provider or (model.provider if model is not None else None)
+        self._model = model  # 默认挂载到事件上的模型对象。
+        self._provider = provider or (model.provider if model is not None else None)  # 默认 provider 名。
 
     @property
     def model(self) -> Model | None:
@@ -111,12 +111,12 @@ class StreamAccumulator:
     def __init__(self) -> None:
         """初始化聚合状态。"""
 
-        self._assistant_message = AssistantMessage()
-        self._tool_call_index: dict[str, int] = {}
-        self._usage: dict[str, Any] | None = None
-        self._stop_reason: str | None = None
-        self._done_event: StreamEvent | None = None
-        self._error_event: StreamEvent | None = None
+        self._assistant_message = AssistantMessage()  # 正在累积的 assistant 消息。
+        self._tool_call_index: dict[str, int] = {}  # tool_call_id 到内容块索引的映射。
+        self._usage: dict[str, Any] | None = None  # 最近一次 done 事件的 usage 信息。
+        self._stop_reason: str | None = None  # 最近一次 done 事件的停止原因。
+        self._done_event: StreamEvent | None = None  # 最近一次收到的完成事件。
+        self._error_event: StreamEvent | None = None  # 最近一次收到的错误事件。
 
     @property
     def assistant_message(self) -> AssistantMessage:

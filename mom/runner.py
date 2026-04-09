@@ -50,12 +50,12 @@ class MomAgentSession(AgentSession):
         **kwargs,
     ) -> None:
         """扩展 AgentSession，为 mom 场景注入平台与频道上下文。"""
-        self.platform_name = platform_name
-        self.mom_store = mom_store
-        self.chat_id = chat_id
-        self.chat_name = chat_name
-        self.chat_users = users
-        self.chat_infos = chats
+        self.platform_name = platform_name  # 平台显示名。
+        self.mom_store = mom_store  # mom 存储层对象。
+        self.chat_id = chat_id  # 当前频道 ID。
+        self.chat_name = chat_name  # 当前频道名。
+        self.chat_users = users  # 已知用户列表。
+        self.chat_infos = chats  # 已知频道列表。
         super().__init__(**kwargs)
 
     def update_chat_directory(self, chat_name: str | None, users: list[ChatUser], chats: list[ChatInfo]) -> None:
@@ -122,23 +122,23 @@ class MomRunner:
         stream_fn=None,
     ) -> None:
         """初始化频道级 runner，负责驱动 Agent 会话并把结果回写聊天平台。"""
-        self.platform_name = platform_name
-        self.chat_id = chat_id
-        self.chat_dir = chat_dir
-        self.store = store
-        self.model = model
-        self.settings = settings
-        self.agent_paths = agent_paths
-        self.render_config = render_config or MomRenderConfig()
-        self.session_manager = SessionManager(store.paths.sessions_dir)
-        self.session_ref = session_ref
+        self.platform_name = platform_name  # 平台显示名。
+        self.chat_id = chat_id  # 频道 ID。
+        self.chat_dir = chat_dir  # 频道工作目录。
+        self.store = store  # mom 存储层对象。
+        self.model = model  # 当前模型。
+        self.settings = settings  # 生效设置。
+        self.agent_paths = agent_paths  # agent 级路径集合。
+        self.render_config = render_config or MomRenderConfig()  # mom 输出渲染配置。
+        self.session_manager = SessionManager(store.paths.sessions_dir)  # 会话管理器。
+        self.session_ref = session_ref  # 频道与会话的持久化引用。
         self.resource_loader = ResourceLoader(
             skills_dir=agent_paths.skills_dir,
             prompts_dir=agent_paths.prompts_dir,
             themes_dir=agent_paths.themes_dir,
             extensions_dir=agent_paths.extensions_dir,
             workspace_root=chat_dir,
-        )
+        )  # 频道上下文下的资源加载器。
         self.session = MomAgentSession(
             platform_name=platform_name,
             mom_store=store,
@@ -156,7 +156,7 @@ class MomRunner:
             session_id=session_ref.session_id,
             branch_id=session_ref.branch_id,
             stream_fn=stream_fn,
-        )
+        )  # 复用的频道 AgentSession。
 
     def abort(self) -> None:
         """中断当前 Agent 执行。"""

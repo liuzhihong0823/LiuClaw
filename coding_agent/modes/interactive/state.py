@@ -13,91 +13,91 @@ from ...core.themes_loader import DEFAULT_THEME_DATA
 class MessageCard:
     """表示兼容旧状态结构保留的一张消息卡片。"""
 
-    id: str
-    title: str
-    body: str = ""
-    style: str = "assistant"
+    id: str  # 卡片 ID。
+    title: str  # 卡片标题。
+    body: str = ""  # 卡片正文。
+    style: str = "assistant"  # 卡片样式类型。
 
 
 @dataclass(slots=True)
 class ToolCard:
     """表示兼容旧状态结构保留的一张工具卡片。"""
 
-    id: str
-    tool_name: str
-    status: str
-    arguments: str = ""
-    output_preview: str = ""
+    id: str  # 卡片 ID。
+    tool_name: str  # 工具名。
+    status: str  # 工具状态。
+    arguments: str = ""  # 工具参数摘要。
+    output_preview: str = ""  # 工具输出摘要。
 
 
 @dataclass(slots=True)
 class TranscriptBlock:
     """表示 transcript 中的一个稳定块。"""
 
-    id: str
-    kind: Literal["user", "assistant", "thinking", "tool", "status", "error"]
-    title: str
-    body: str = ""
-    status: str = ""
-    tool_name: str = ""
-    source: str = ""
-    render_order: int = 0
-    collapsed: bool = False
+    id: str  # 块唯一 ID。
+    kind: Literal["user", "assistant", "thinking", "tool", "status", "error"]  # 块类型。
+    title: str  # 块标题。
+    body: str = ""  # 块正文。
+    status: str = ""  # 工具或状态块的状态值。
+    tool_name: str = ""  # 关联工具名。
+    source: str = ""  # 块来源。
+    render_order: int = 0  # 渲染排序权重。
+    collapsed: bool = False  # 是否折叠显示。
 
 
 @dataclass(slots=True)
 class TranscriptTurn:
     """表示一次用户问题及其后续完整回答流程。"""
 
-    turn_id: str
-    user_prompt_preview: str
-    user_block: TranscriptBlock
-    thinking_blocks: list[TranscriptBlock] = field(default_factory=list)
-    tool_blocks: list[TranscriptBlock] = field(default_factory=list)
-    status_blocks: list[TranscriptBlock] = field(default_factory=list)
-    assistant_block: TranscriptBlock | None = None
-    started_at: str = ""
-    completed: bool = False
+    turn_id: str  # turn 唯一 ID。
+    user_prompt_preview: str  # 用户输入摘要。
+    user_block: TranscriptBlock  # 用户输入块。
+    thinking_blocks: list[TranscriptBlock] = field(default_factory=list)  # thinking 块列表。
+    tool_blocks: list[TranscriptBlock] = field(default_factory=list)  # 工具块列表。
+    status_blocks: list[TranscriptBlock] = field(default_factory=list)  # 状态块列表。
+    assistant_block: TranscriptBlock | None = None  # assistant 主回复块。
+    started_at: str = ""  # turn 开始时间。
+    completed: bool = False  # turn 是否已完成。
 
 
 @dataclass(slots=True)
 class InteractiveState:
     """保存交互界面的全部可见状态。"""
 
-    session_id: str
-    model_id: str
-    thinking: str | None
-    cwd: Path
-    theme: str
-    theme_styles: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_THEME_DATA))
-    submit_on_enter: bool = True
-    is_running: bool = False
-    last_error: str = ""
-    status_message: str = ""
-    current_tool: str = ""
-    output_cards: list[MessageCard] = field(default_factory=list)
-    thinking_cards: list[MessageCard] = field(default_factory=list)
-    tool_cards: list[ToolCard] = field(default_factory=list)
-    transcript_turns: list[TranscriptTurn] = field(default_factory=list)
-    transcript_orphans: list[TranscriptBlock] = field(default_factory=list)
-    transcript_text: str = "No output yet.\n"
-    transcript_line_count: int = 1
-    transcript_line_styles: dict[int, str] = field(default_factory=dict)
-    transcript_blocks: list[TranscriptBlock] = field(default_factory=list)
-    last_visible_block_id: str = ""
-    transcript_revision: int = 0
-    last_rendered_revision: int = -1
-    last_known_bottom_line: int = 0
-    status_timeline: list[str] = field(default_factory=list)
-    recent_sessions: list[dict] = field(default_factory=list)
-    auto_follow_output: bool = True
-    unseen_output_updates: int = 0
-    scroll_anchor: Literal["latest", "history", "jumped_latest"] = "latest"
-    main_view_mode: Literal["latest", "history"] = "latest"
-    main_view_top_display_line: int = 0
-    main_last_rendered_content_height: int = 0
-    main_pending_jump_to_bottom: bool = False
-    last_output_event_id: str = ""
+    session_id: str  # 当前会话 ID。
+    model_id: str  # 当前模型 ID。
+    thinking: str | None  # 当前思考等级。
+    cwd: Path  # 当前工作目录。
+    theme: str  # 当前主题名。
+    theme_styles: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_THEME_DATA))  # 当前主题样式映射。
+    submit_on_enter: bool = True  # 回车是否直接提交。
+    is_running: bool = False  # 当前是否正在运行请求。
+    last_error: str = ""  # 最近一次错误消息。
+    status_message: str = ""  # 状态栏当前文案。
+    current_tool: str = ""  # 当前正在执行的工具名。
+    output_cards: list[MessageCard] = field(default_factory=list)  # 旧输出卡片结构。
+    thinking_cards: list[MessageCard] = field(default_factory=list)  # 旧 thinking 卡片结构。
+    tool_cards: list[ToolCard] = field(default_factory=list)  # 旧工具卡片结构。
+    transcript_turns: list[TranscriptTurn] = field(default_factory=list)  # transcript turn 列表。
+    transcript_orphans: list[TranscriptBlock] = field(default_factory=list)  # 未归属 turn 的块。
+    transcript_text: str = "No output yet.\n"  # 主输出区全文本。
+    transcript_line_count: int = 1  # 主输出区总行数。
+    transcript_line_styles: dict[int, str] = field(default_factory=dict)  # 行号到样式的映射。
+    transcript_blocks: list[TranscriptBlock] = field(default_factory=list)  # 展平后的块序列。
+    last_visible_block_id: str = ""  # 最后一个可见块 ID。
+    transcript_revision: int = 0  # transcript 修订号。
+    last_rendered_revision: int = -1  # 最近一次已渲染修订号。
+    last_known_bottom_line: int = 0  # 最近一次已知底部行号。
+    status_timeline: list[str] = field(default_factory=list)  # 近期状态消息时间线。
+    recent_sessions: list[dict] = field(default_factory=list)  # 最近会话列表。
+    auto_follow_output: bool = True  # 是否自动跟随最新输出。
+    unseen_output_updates: int = 0  # 未读输出更新数。
+    scroll_anchor: Literal["latest", "history", "jumped_latest"] = "latest"  # 当前滚动锚点。
+    main_view_mode: Literal["latest", "history"] = "latest"  # 主区域查看模式。
+    main_view_top_display_line: int = 0  # 主区域顶部显示行号。
+    main_last_rendered_content_height: int = 0  # 上次渲染内容高度。
+    main_pending_jump_to_bottom: bool = False  # 是否待跳到底部。
+    last_output_event_id: str = ""  # 最近一次可见输出事件 ID。
 
     @classmethod
     def from_session(cls, session: AgentSession) -> "InteractiveState":

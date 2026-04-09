@@ -26,8 +26,8 @@ class SettingsManager:
     def __init__(self, global_settings_file: Path, project_settings_file: Path | None = None) -> None:
         """初始化全局与项目级设置文件位置。"""
 
-        self.global_settings_file = global_settings_file
-        self.project_settings_file = project_settings_file
+        self.global_settings_file = global_settings_file  # 全局设置文件路径。
+        self.project_settings_file = project_settings_file  # 项目级设置文件路径。
 
     def load(self) -> CodingAgentSettings:
         """读取并合并全局设置与项目设置。"""

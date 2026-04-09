@@ -14,8 +14,8 @@ from .types import ChatEvent
 class EventRecord:
     """事件文件中定义的通用事件记录结构。"""
 
-    name: str
-    data: dict[str, Any]
+    name: str  # 事件名称。
+    data: dict[str, Any]  # 事件载荷数据。
 
 
 class EventsWatcher:

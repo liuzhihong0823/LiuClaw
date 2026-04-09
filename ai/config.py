@@ -11,15 +11,15 @@ from typing import Any
 class ProviderConfig:
     """描述一个 provider 的运行时配置。"""
 
-    name: str
-    baseUrl: str | None = None
-    apiKey: str | None = None
-    apiKeyEnv: str | None = None
-    headers: dict[str, str] = field(default_factory=dict)
-    providerOverrides: dict[str, Any] = field(default_factory=dict)
-    modelOverrides: dict[str, dict[str, Any]] = field(default_factory=dict)
-    capabilities: dict[str, Any] = field(default_factory=dict)
-    sdk: str | None = None
+    name: str  # provider 名称，用作注册表中的唯一键。
+    baseUrl: str | None = None  # provider 的基础 API 地址。
+    apiKey: str | None = None  # 显式写在配置里的 API Key。
+    apiKeyEnv: str | None = None  # 存放 API Key 的环境变量名。
+    headers: dict[str, str] = field(default_factory=dict)  # 额外附加到请求上的固定请求头。
+    providerOverrides: dict[str, Any] = field(default_factory=dict)  # 对 provider 级行为的覆盖配置。
+    modelOverrides: dict[str, dict[str, Any]] = field(default_factory=dict)  # 针对具体模型的字段覆盖。
+    capabilities: dict[str, Any] = field(default_factory=dict)  # 补充声明 provider 或模型能力。
+    sdk: str | None = None  # 指定优先使用的 SDK 类型或接入方式。
 
     def resolve_api_key(self) -> str | None:
         """返回配置中的 API Key，优先使用显式值，其次读取环境变量。"""
@@ -35,8 +35,8 @@ class ProviderConfig:
 class AIConfig:
     """描述本地 AI 配置中心。"""
 
-    providers: dict[str, ProviderConfig] = field(default_factory=dict)
-    models: dict[str, dict[str, Any]] = field(default_factory=dict)
+    providers: dict[str, ProviderConfig] = field(default_factory=dict)  # provider 配置映射。
+    models: dict[str, dict[str, Any]] = field(default_factory=dict)  # 模型覆盖或自定义模型配置。
 
 
 def load_ai_config(config_path: str | Path | None = None) -> AIConfig:

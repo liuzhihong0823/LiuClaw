@@ -21,12 +21,12 @@ class ToolRegistry:
     ) -> None:
         """初始化工具注册表。"""
 
-        self.workspace_root = workspace_root
-        self.cwd = cwd
-        self.settings = settings
-        self.security_policy = security_policy
-        self._definitions: dict[str, ToolDefinition] = {}
-        self._active_tools: list[AgentTool] = []
+        self.workspace_root = workspace_root  # 工作区根目录。
+        self.cwd = cwd  # 当前工具执行目录。
+        self.settings = settings  # 生效设置。
+        self.security_policy = security_policy  # 工具安全策略。
+        self._definitions: dict[str, ToolDefinition] = {}  # 已注册工具定义。
+        self._active_tools: list[AgentTool] = []  # 当前激活工具实例。
 
     @property
     def definitions(self) -> list[ToolDefinition]:

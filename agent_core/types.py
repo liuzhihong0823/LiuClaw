@@ -40,8 +40,8 @@ AgentPayload: TypeAlias = dict[str, Any]
 class AbortSignal:
     """定义 Agent 内统一使用的中断信号。"""
 
-    reason: str | None = None
-    _event: asyncio.Event = field(default_factory=asyncio.Event)
+    reason: str | None = None  # 中断原因。
+    _event: asyncio.Event = field(default_factory=asyncio.Event)  # 内部等待/唤醒事件。
 
     @property
     def aborted(self) -> bool:
@@ -72,10 +72,10 @@ class AbortSignal:
 class AgentError:
     """定义 Agent 运行期统一错误对象。"""
 
-    kind: AgentErrorKind
-    message: str
-    details: Any | None = None
-    retriable: bool = False
+    kind: AgentErrorKind  # 错误分类。
+    message: str  # 面向上层的错误消息。
+    details: Any | None = None  # 原始错误细节。
+    retriable: bool = False  # 是否适合重试。
 
     def __str__(self) -> str:
         return self.message
@@ -97,20 +97,20 @@ class AgentError:
 class AgentRuntimeFlags:
     """定义 Agent 运行中的临时标记位。"""
 
-    isStreaming: bool = False
-    isRunning: bool = False
-    isCancelled: bool = False
-    turnIndex: int = 0
-    retryCount: int = 0
+    isStreaming: bool = False  # 当前是否处于流式输出中。
+    isRunning: bool = False  # Agent 循环是否正在运行。
+    isCancelled: bool = False  # 本轮是否已被取消。
+    turnIndex: int = 0  # 当前处于第几轮 turn。
+    retryCount: int = 0  # 当前运行已重试次数。
 
 
 @dataclass(slots=True)
 class AgentContext:
     """定义一次 Agent 调用 AI 或工具时使用的上下文快照。"""
 
-    systemPrompt: str | None = None
-    messages: list[Any] = field(default_factory=list)
-    tools: list[Tool] = field(default_factory=list)
+    systemPrompt: str | None = None  # 本次调用使用的系统提示词。
+    messages: list[Any] = field(default_factory=list)  # 发送给模型的消息上下文。
+    tools: list[Tool] = field(default_factory=list)  # 本次调用可见的工具列表。
 
     @property
     def history(self) -> list[Any]:
@@ -176,7 +176,7 @@ class AgentToolExecutor(Protocol):
 class AgentTool(Tool):
     """定义可供 Agent 调用的工具。"""
 
-    executor: AgentToolExecutor | None = None
+    executor: AgentToolExecutor | None = None  # 工具实际执行函数。
 
     def __init__(
         self,
@@ -207,15 +207,15 @@ class AgentTool(Tool):
 class AgentState:
     """定义 Agent 在循环运行中的实时状态。"""
 
-    systemPrompt: str | None = None
-    model: Model | str | None = None
-    thinking: ReasoningLevel | None = None
-    tools: list[AgentTool] = field(default_factory=list)
-    messages: list[Any] = field(default_factory=list)
-    stream_message: AssistantMessage | None = None
-    pending_tool_calls: list[ToolCall] = field(default_factory=list)
-    error: AgentError | None = None
-    runtime_flags: AgentRuntimeFlags = field(default_factory=AgentRuntimeFlags)
+    systemPrompt: str | None = None  # 当前生效的系统提示词。
+    model: Model | str | None = None  # 当前使用的模型或模型 ID。
+    thinking: ReasoningLevel | None = None  # 当前推理等级。
+    tools: list[AgentTool] = field(default_factory=list)  # 当前可调用工具。
+    messages: list[Any] = field(default_factory=list)  # 累积的内部消息历史。
+    stream_message: AssistantMessage | None = None  # 正在流式生成的 assistant 消息。
+    pending_tool_calls: list[ToolCall] = field(default_factory=list)  # 尚未执行完成的工具调用。
+    error: AgentError | None = None  # 当前运行中的最后错误。
+    runtime_flags: AgentRuntimeFlags = field(default_factory=AgentRuntimeFlags)  # 运行期标记位。
 
     def __init__(
         self,
@@ -234,18 +234,18 @@ class AgentState:
         runningToolCall: ToolCall | None = None,
         isStreaming: bool | None = None,
     ) -> None:
-        self.systemPrompt = systemPrompt
-        self.model = model
-        self.thinking = thinking
-        self.tools = list(tools or [])
-        self.messages = list(messages if messages is not None else (history or []))
-        self.stream_message = stream_message if stream_message is not None else currentMessage
-        self.pending_tool_calls = list(pending_tool_calls or ([runningToolCall] if runningToolCall is not None else []))
+        self.systemPrompt = systemPrompt  # 当前生效的系统提示词。
+        self.model = model  # 当前模型或模型 ID。
+        self.thinking = thinking  # 当前推理等级。
+        self.tools = list(tools or [])  # 当前可用工具。
+        self.messages = list(messages if messages is not None else (history or []))  # 运行中的内部消息历史。
+        self.stream_message = stream_message if stream_message is not None else currentMessage  # 正在流式生成的 assistant 消息。
+        self.pending_tool_calls = list(pending_tool_calls or ([runningToolCall] if runningToolCall is not None else []))  # 未处理完成的工具调用。
         if isinstance(error, str):
             self.error = AgentError(kind="runtime_error", message=error)
         else:
-            self.error = error
-        self.runtime_flags = replace(runtime_flags) if runtime_flags is not None else AgentRuntimeFlags()
+            self.error = error  # 最近错误对象。
+        self.runtime_flags = replace(runtime_flags) if runtime_flags is not None else AgentRuntimeFlags()  # 运行时标记位。
         if isStreaming is not None:
             self.runtime_flags.isStreaming = isStreaming
 
@@ -278,13 +278,13 @@ class AgentState:
 class BeforeToolCallContext:
     """定义 beforeToolCall 收到的上下文信息。"""
 
-    state: AgentState
-    tool: AgentTool
-    toolCall: ToolCall
-    params: Any
-    assistantMessage: AssistantMessage | None
-    agentContext: AgentContext
-    signal: AbortSignal
+    state: AgentState  # 当前 Agent 状态。
+    tool: AgentTool  # 即将执行的工具。
+    toolCall: ToolCall  # 原始工具调用。
+    params: Any  # 已解析参数。
+    assistantMessage: AssistantMessage | None  # 发起调用的 assistant 消息。
+    agentContext: AgentContext  # 调用发生时的上下文快照。
+    signal: AbortSignal  # 当前运行的中断信号。
 
     @property
     def arguments(self) -> str:
@@ -297,14 +297,14 @@ class BeforeToolCallContext:
 class AfterToolCallContext:
     """定义 afterToolCall 收到的上下文信息。"""
 
-    state: AgentState
-    tool: AgentTool
-    toolCall: ToolCall
-    params: Any
-    result: ToolResultMessage
-    assistantMessage: AssistantMessage | None
-    agentContext: AgentContext
-    signal: AbortSignal
+    state: AgentState  # 当前 Agent 状态。
+    tool: AgentTool  # 已执行完成的工具。
+    toolCall: ToolCall  # 原始工具调用。
+    params: Any  # 已解析参数。
+    result: ToolResultMessage  # 当前工具结果。
+    assistantMessage: AssistantMessage | None  # 发起调用的 assistant 消息。
+    agentContext: AgentContext  # 调用发生时的上下文快照。
+    signal: AbortSignal  # 当前运行的中断信号。
 
     @property
     def arguments(self) -> str:
@@ -317,24 +317,24 @@ class AfterToolCallContext:
 class BeforeToolCallAllow:
     """表示 beforeToolCall 允许工具继续执行。"""
 
-    action: Literal["allow"] = "allow"
+    action: Literal["allow"] = "allow"  # 动作类型：允许执行。
 
 
 @dataclass(slots=True)
 class BeforeToolCallSkip:
     """表示 beforeToolCall 跳过真实执行并直接返回替代结果。"""
 
-    result: ToolExecutionResult
-    action: Literal["skip"] = "skip"
+    result: ToolExecutionResult  # 直接返回的替代结果。
+    action: Literal["skip"] = "skip"  # 动作类型：跳过真实执行。
 
 
 @dataclass(slots=True)
 class BeforeToolCallError:
     """表示 beforeToolCall 阻止工具执行并返回错误。"""
 
-    error: str
-    details: Any | None = None
-    action: Literal["error"] = "error"
+    error: str  # 错误文本。
+    details: Any | None = None  # 额外错误细节。
+    action: Literal["error"] = "error"  # 动作类型：阻止执行。
 
 
 BeforeToolCallResult: TypeAlias = BeforeToolCallAllow | BeforeToolCallSkip | BeforeToolCallError | None
@@ -344,15 +344,15 @@ BeforeToolCallResult: TypeAlias = BeforeToolCallAllow | BeforeToolCallSkip | Bef
 class AfterToolCallPass:
     """表示 afterToolCall 保留原始工具结果。"""
 
-    action: Literal["pass"] = "pass"
+    action: Literal["pass"] = "pass"  # 动作类型：保留原结果。
 
 
 @dataclass(slots=True)
 class AfterToolCallReplace:
     """表示 afterToolCall 用新结果替换原始工具结果。"""
 
-    result: ToolExecutionResult
-    action: Literal["replace"] = "replace"
+    result: ToolExecutionResult  # 替换后的结果。
+    action: Literal["replace"] = "replace"  # 动作类型：替换结果。
 
 
 AfterToolCallResult: TypeAlias = AfterToolCallPass | AfterToolCallReplace | None
@@ -404,18 +404,18 @@ class GetFollowUpMessagesFn(Protocol):
 class RetryDecision:
     """定义一次错误后的重试决策。"""
 
-    shouldRetry: bool = False
-    delaySeconds: float = 0.0
+    shouldRetry: bool = False  # 是否应该重试。
+    delaySeconds: float = 0.0  # 重试前等待秒数。
 
 
 @dataclass(slots=True)
 class RetryContext:
     """定义重试策略收到的上下文。"""
 
-    error: AgentError
-    state: AgentState
-    attempt: int
-    signal: AbortSignal
+    error: AgentError  # 当前错误对象。
+    state: AgentState  # 出错时的状态快照。
+    attempt: int  # 当前是第几次尝试。
+    signal: AbortSignal  # 当前运行的中断信号。
 
 
 class RetryPolicyFn(Protocol):
@@ -432,20 +432,20 @@ class RetryPolicyFn(Protocol):
 class AgentLoopConfig:
     """定义 Agent 主循环运行所需的一切配置。"""
 
-    systemPrompt: str | None = None
-    model: Model | str | None = None
-    thinking: ReasoningLevel | None = None
-    tools: list[AgentTool] = field(default_factory=list)
-    stream: AgentStreamFn | None = None
-    convert_to_llm: ConvertToLlmFn | None = None
-    transform_context: TransformContextFn | None = None
-    get_steering_messages: GetSteeringMessagesFn | None = None
-    get_follow_up_messages: GetFollowUpMessagesFn | None = None
-    toolExecutionMode: ToolExecutionMode = "serial"
-    beforeToolCall: BeforeToolCallFn | None = None
-    afterToolCall: AfterToolCallFn | None = None
-    retryPolicy: RetryPolicyFn | None = None
-    registry: ProviderRegistry | None = None
+    systemPrompt: str | None = None  # 系统提示词。
+    model: Model | str | None = None  # 当前模型。
+    thinking: ReasoningLevel | None = None  # 推理等级。
+    tools: list[AgentTool] = field(default_factory=list)  # 可用工具列表。
+    stream: AgentStreamFn | None = None  # 自定义流式调用函数。
+    convert_to_llm: ConvertToLlmFn | None = None  # 内部消息到 LLM 消息的转换函数。
+    transform_context: TransformContextFn | None = None  # 发送前上下文变换函数。
+    get_steering_messages: GetSteeringMessagesFn | None = None  # 中途插话消息提供函数。
+    get_follow_up_messages: GetFollowUpMessagesFn | None = None  # 结束后 follow-up 消息提供函数。
+    toolExecutionMode: ToolExecutionMode = "serial"  # 工具执行模式。
+    beforeToolCall: BeforeToolCallFn | None = None  # 工具执行前钩子。
+    afterToolCall: AfterToolCallFn | None = None  # 工具执行后钩子。
+    retryPolicy: RetryPolicyFn | None = None  # 错误重试策略。
+    registry: ProviderRegistry | None = None  # provider 注册表。
 
     def __init__(
         self,
@@ -467,20 +467,20 @@ class AgentLoopConfig:
         steer: GetSteeringMessagesFn | None = None,
         followUp: GetFollowUpMessagesFn | None = None,
     ) -> None:
-        self.systemPrompt = systemPrompt
-        self.model = model
-        self.thinking = thinking
-        self.tools = list(tools or [])
-        self.stream = stream
-        self.convert_to_llm = convert_to_llm
-        self.transform_context = transform_context
-        self.get_steering_messages = get_steering_messages or steer
-        self.get_follow_up_messages = get_follow_up_messages or followUp
-        self.toolExecutionMode = toolExecutionMode
-        self.beforeToolCall = beforeToolCall
-        self.afterToolCall = afterToolCall
-        self.retryPolicy = retryPolicy
-        self.registry = registry
+        self.systemPrompt = systemPrompt  # 系统提示词。
+        self.model = model  # 当前模型。
+        self.thinking = thinking  # 推理等级。
+        self.tools = list(tools or [])  # 可用工具。
+        self.stream = stream  # 流式函数。
+        self.convert_to_llm = convert_to_llm  # 消息转换函数。
+        self.transform_context = transform_context  # 上下文变换函数。
+        self.get_steering_messages = get_steering_messages or steer  # steering 提供函数。
+        self.get_follow_up_messages = get_follow_up_messages or followUp  # follow-up 提供函数。
+        self.toolExecutionMode = toolExecutionMode  # 工具执行模式。
+        self.beforeToolCall = beforeToolCall  # 工具前置钩子。
+        self.afterToolCall = afterToolCall  # 工具后置钩子。
+        self.retryPolicy = retryPolicy  # 重试策略。
+        self.registry = registry  # provider 注册表。
 
     @property
     def steer(self) -> GetSteeringMessagesFn | None:
@@ -507,9 +507,9 @@ class AgentLoopConfig:
 class AgentEvent:
     """定义对外暴露的统一 Agent 事件对象。"""
 
-    type: AgentEventType
-    state: AgentState | None = None
-    payload: AgentPayload = field(default_factory=dict)
+    type: AgentEventType  # 事件类型。
+    state: AgentState | None = None  # 事件发生时的状态快照。
+    payload: AgentPayload = field(default_factory=dict)  # 事件载荷。
 
     @property
     def message(self) -> Any:

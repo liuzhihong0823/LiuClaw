@@ -15,8 +15,8 @@ class InteractiveApp:
     def __init__(self, session: AgentSession, model_registry: ModelRegistry | None = None) -> None:
         """保存当前正在交互的会话对象。"""
 
-        self.session = session
-        self.model_registry = model_registry
+        self.session = session  # 当前交互使用的会话对象。
+        self.model_registry = model_registry  # 可选的模型注册表。
 
     async def run(self) -> int:
         """启动交互循环，优先使用 `prompt_toolkit`。"""

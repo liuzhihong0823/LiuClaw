@@ -57,20 +57,20 @@ from .types import (
 class PreparedToolCall:
     """表示已经通过可用性与参数校验的工具调用。"""
 
-    toolCall: ToolCall
-    tool: AgentTool
-    params: Any
-    assistantMessage: AssistantMessage | None
-    agentContext: AgentContext
+    toolCall: ToolCall  # 原始工具调用对象。
+    tool: AgentTool  # 匹配到的可执行工具。
+    params: Any  # 已解析和校验过的参数。
+    assistantMessage: AssistantMessage | None  # 发起该调用的 assistant 消息。
+    agentContext: AgentContext  # 调用发生时的 Agent 上下文快照。
 
 
 @dataclass(slots=True)
 class PreparedToolCallError:
     """表示工具调用在预处理阶段失败或被短路。"""
 
-    toolCall: ToolCall
-    error: AgentError | None = None
-    shortcutResult: ToolResultMessage | None = None
+    toolCall: ToolCall  # 原始工具调用对象。
+    error: AgentError | None = None  # 预处理阶段的错误信息。
+    shortcutResult: ToolResultMessage | None = None  # 被短路时直接返回的工具结果。
 
 
 async def _maybe_await(value: Any) -> Any:

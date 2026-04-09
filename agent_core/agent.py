@@ -24,13 +24,13 @@ class AgentEventListener(Protocol):
 class AgentOptions:
     """定义创建高层 Agent 时使用的配置选项。"""
 
-    loop: AgentLoopConfig
-    initialState: AgentState | None = None
-    listeners: list[AgentEventListener] = field(default_factory=list)
-    pendingMessages: list[Any] = field(default_factory=list)
-    steeringMessages: list[Any] = field(default_factory=list)
-    followUpMessages: list[Any] = field(default_factory=list)
-    autoCopyState: bool = True
+    loop: AgentLoopConfig  # 底层 Agent 循环配置。
+    initialState: AgentState | None = None  # 可选的初始状态。
+    listeners: list[AgentEventListener] = field(default_factory=list)  # 初始事件监听器。
+    pendingMessages: list[Any] = field(default_factory=list)  # 初始待发送普通消息。
+    steeringMessages: list[Any] = field(default_factory=list)  # 初始 steering 消息。
+    followUpMessages: list[Any] = field(default_factory=list)  # 初始 follow-up 消息。
+    autoCopyState: bool = True  # 是否在注入初始状态时复制一份。
 
 
 def _copy_message(message: Any) -> Any:
@@ -81,17 +81,17 @@ class Agent:
         """根据 AgentOptions 或 AgentLoopConfig 初始化高层 Agent。"""
 
         resolved_options = options if isinstance(options, AgentOptions) else AgentOptions(loop=options)
-        self._options = resolved_options
-        self._loop = resolved_options.loop
-        self._listeners: list[AgentEventListener] = list(resolved_options.listeners)
-        self._pendingMessages: list[Any] = [ensure_message(message) if isinstance(message, dict) and "role" in message else message for message in resolved_options.pendingMessages]
-        self._steeringMessages: list[Any] = [ensure_message(message) if isinstance(message, dict) and "role" in message else message for message in resolved_options.steeringMessages]
-        self._followUpMessages: list[Any] = [ensure_message(message) if isinstance(message, dict) and "role" in message else message for message in resolved_options.followUpMessages]
-        self._currentSession: StreamSession[AgentEvent] | None = None
-        self._currentTask: asyncio.Task[None] | None = None
-        self._abortSignal: AbortSignal | None = None
-        self._cancelRequested = False
-        self._isRunning = False
+        self._options = resolved_options  # 完整的 Agent 初始化选项。
+        self._loop = resolved_options.loop  # 当前绑定的底层循环配置。
+        self._listeners: list[AgentEventListener] = list(resolved_options.listeners)  # 事件监听器列表。
+        self._pendingMessages: list[Any] = [ensure_message(message) if isinstance(message, dict) and "role" in message else message for message in resolved_options.pendingMessages]  # 普通待处理消息队列。
+        self._steeringMessages: list[Any] = [ensure_message(message) if isinstance(message, dict) and "role" in message else message for message in resolved_options.steeringMessages]  # steering 消息队列。
+        self._followUpMessages: list[Any] = [ensure_message(message) if isinstance(message, dict) and "role" in message else message for message in resolved_options.followUpMessages]  # follow-up 消息队列。
+        self._currentSession: StreamSession[AgentEvent] | None = None  # 当前对外暴露的事件流会话。
+        self._currentTask: asyncio.Task[None] | None = None  # 负责桥接底层循环的后台任务。
+        self._abortSignal: AbortSignal | None = None  # 当前运行使用的中断信号。
+        self._cancelRequested = False  # 是否已经请求取消。
+        self._isRunning = False  # 当前 Agent 是否正在运行。
         if resolved_options.initialState is not None:
             self.state = _copy_state(resolved_options.initialState) if resolved_options.autoCopyState else resolved_options.initialState
         else:

@@ -13,8 +13,8 @@ class ModelRegistry:
     def __init__(self, models_file: Path) -> None:
         """初始化模型注册表并立即加载模型集合。"""
 
-        self.models_file = models_file
-        self._models = self._load_models()
+        self.models_file = models_file  # 用户模型定义文件。
+        self._models = self._load_models()  # 内置模型与用户模型的合并索引。
 
     def _load_models(self) -> dict[str, Model]:
         """加载内置模型与用户模型并按 ID 建索引。"""

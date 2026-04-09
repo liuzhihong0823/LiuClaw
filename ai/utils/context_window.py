@@ -26,10 +26,10 @@ class ContextOverflowError(ValueError):
 class ContextOverflowReport:
     """描述一次上下文窗口检测的结果。"""
 
-    estimated_tokens: int
-    requested_output_tokens: int
-    total_tokens: int
-    limit: int
+    estimated_tokens: int  # 当前上下文估算出的输入 token 数。
+    requested_output_tokens: int  # 预留给模型输出的 token 数。
+    total_tokens: int  # 输入与输出预算合计。
+    limit: int  # 模型允许的上下文窗口上限。
 
     @property
     def is_overflow(self) -> bool:

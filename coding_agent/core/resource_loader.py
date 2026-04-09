@@ -24,11 +24,11 @@ class ResourceLoader:
     ) -> None:
         """保存资源目录与工作区根目录。"""
 
-        self.skills_dir = skills_dir
-        self.prompts_dir = prompts_dir
-        self.themes_dir = themes_dir
-        self.extensions_dir = extensions_dir
-        self.workspace_root = workspace_root
+        self.skills_dir = skills_dir  # 技能目录。
+        self.prompts_dir = prompts_dir  # 提示模板目录。
+        self.themes_dir = themes_dir  # 主题目录。
+        self.extensions_dir = extensions_dir  # 扩展目录。
+        self.workspace_root = workspace_root  # 当前工作区根目录。
 
     def load(self) -> ResourceBundle:
         """执行一次完整资源扫描，并返回聚合后的资源包。"""

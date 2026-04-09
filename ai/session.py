@@ -22,10 +22,10 @@ class StreamSession(Generic[TEvent]):
     ) -> None:
         """初始化会话并保存模型、队列与生产者任务。"""
 
-        self.model = model
-        self.queue = queue
-        self.producer_task = producer_task
-        self._should_stop = should_stop or self._default_should_stop
+        self.model = model  # 当前流式会话绑定的模型。
+        self.queue = queue  # 生产者写入、消费者读取的事件队列。
+        self.producer_task = producer_task  # 后台生产事件的任务。
+        self._should_stop = should_stop or self._default_should_stop  # 判断流何时结束的回调。
 
     async def consume(self) -> AsyncIterator[TEvent]:
         """持续从队列中取事件，并在 `done/error` 后结束。"""
