@@ -41,6 +41,7 @@ class AgentSession:
         resource_loader: ResourceLoader,
         model_registry=None,
         session_id: str | None = None,
+        session_file: str | None = None,
         branch_id: str = "main",
         stream_fn=None,
         registry: ProviderRegistry | None = None,
@@ -56,8 +57,9 @@ class AgentSession:
         self.resource_loader = resource_loader  # 资源加载器。
         self.model_registry = model_registry  # 可选模型解析器。
         self.session_id = session_id  # 当前会话 ID。
-        self.branch_id = branch_id  # 当前分支 ID。
-        self.last_node_id: str | None = None  # 最近写入的会话节点 ID。
+        self.session_file = session_file  # 当前会话文件。
+        self.leaf_id: str | None = None  # 当前叶子节点。
+        self.branch_id = branch_id  # 兼容旧接口，值始终映射到 leaf_id。
         self._event_message_counter = 0  # 生成事件消息 ID 的计数器。
         self._current_assistant_message_id = ""  # 当前 assistant 消息 ID。
         self._turn_counter = 0  # turn 计数器。
@@ -66,10 +68,19 @@ class AgentSession:
         self.compaction: CompactionCoordinator = self.runtime.compaction  # 上下文压缩协调器。
         self._stream_fn = stream_fn  # 自定义底层流式函数。
         self._agent = self._build_agent()  # 底层高层 Agent 封装对象。
-        if self.session_id is None:
+        if self.session_file is None and self.session_id is not None:
+            self.session_file = str(self.session_manager.resolve_session_file(self.session_id) or "")
+        if self.session_id is None and self.session_file is None:
             snapshot = self.session_manager.create_session(cwd=cwd, model_id=model.id)
             self.session_id = snapshot.session_id
-            self.branch_id = snapshot.branch_id
+            self.session_file = str(snapshot.session_file)
+            self.leaf_id = snapshot.leaf_id
+            self.branch_id = self.leaf_id or branch_id
+        elif self.session_file:
+            snapshot = self.session_manager.load_session(self.session_file)
+            self.session_id = snapshot.session_id
+            self.leaf_id = snapshot.leaf_id
+            self.branch_id = self.leaf_id or branch_id
 
     def _assemble_runtime(self, provider_registry: ProviderRegistry | None = None) -> SessionRuntimeAssembly:
         """装配当前 session 运行时依赖。"""
@@ -191,20 +202,36 @@ class AgentSession:
     def resume_session(self) -> None:
         """从持久化会话恢复历史上下文并同步到底层 Agent。"""
 
-        history = self.session_manager.build_context_messages(self.session_id, self.branch_id)
+        if not self.session_file:
+            raise RuntimeError("No session file to resume")
+        history_context = self.session_manager.build_session_context(self.session_file, self.leaf_id)
+        if history_context.model and history_context.model.get("model_id") and self.model_registry is not None:
+            resolved_id = history_context.model["model_id"]
+            if resolved_id and resolved_id != self.model.id:
+                try:
+                    self.model = self.model_registry.get(resolved_id)
+                    self.runtime = self._assemble_runtime(provider_registry=self.runtime.provider_registry)
+                    self.compaction = self.runtime.compaction
+                    self._agent.setModel(self.model)
+                    self._agent.setTools(self.runtime.tools)
+                except Exception:
+                    pass
+        history = history_context.messages
         self._agent.setState(
             replace(
                 self._agent.getState(),
                 history=history,
                 systemPrompt=self._build_system_prompt(),
                 model=self.model,
-                thinking=self.thinking,
+                thinking=self.thinking or history_context.thinking_level,
                 tools=self.runtime.tools,
             )
         )
-        snapshot = self.session_manager.load_session(self.session_id)
-        if snapshot.nodes:
-            self.last_node_id = snapshot.nodes[-1].id
+        snapshot = self.session_manager.load_session(self.session_file)
+        self.session_id = snapshot.session_id
+        self.leaf_id = self.leaf_id or snapshot.leaf_id
+        self.branch_id = self.leaf_id or "main"
+        self.cwd = snapshot.cwd
 
     def switch_model(self, model) -> None:
         """切换当前会话使用的模型，并更新系统提示。"""
@@ -215,9 +242,9 @@ class AgentSession:
         self._agent.setModel(model)
         self._agent.setTools(self.runtime.tools)
         self._agent.setSystemPrompt(self._build_system_prompt())
-        meta = self.session_manager._read_meta(self.session_id)
-        meta["model_id"] = model.id
-        self.session_manager._write_meta(self.session_id, meta)
+        if self.session_file:
+            self.session_manager.append_model_change(self.session_file, model.provider, model.id)
+            self.resume_session()
 
     def set_thinking(self, thinking: str | None) -> None:
         """调整当前会话的思考等级，并更新系统提示。"""
@@ -226,11 +253,18 @@ class AgentSession:
         self.compaction.compactor.runtime.thinking = thinking
         self._agent.setThinking(thinking)
         self._agent.setSystemPrompt(self._build_system_prompt())
+        if self.session_file and thinking:
+            self.session_manager.append_thinking_level_change(self.session_file, thinking)
+            self.resume_session()
 
-    async def compact(self):
+    async def compact(self, custom_instructions: str | None = None):
         """手动触发当前会话分支的上下文压缩。"""
 
-        return await self.compaction.compact_manual(self.session_id, self.branch_id)
+        if not self.session_file:
+            raise RuntimeError("No active session file")
+        result = await self.compaction.compact_manual(self.session_file, self.leaf_id, custom_instructions=custom_instructions)
+        self.resume_session()
+        return result
 
     def cancel(self) -> None:
         """取消当前运行中的 agent 循环。"""
@@ -245,7 +279,9 @@ class AgentSession:
     def get_last_user_message(self) -> str | None:
         """返回当前会话最近一条真实用户输入。"""
 
-        messages = self.session_manager.build_context_messages(self.session_id, self.branch_id)
+        if not self.session_file:
+            return None
+        messages = self.session_manager.build_context_messages(self.session_file, self.leaf_id)
         for message in reversed(messages):
             if isinstance(message, UserMessage):
                 return message.content
@@ -260,7 +296,7 @@ class AgentSession:
                 async for event in self._run_turn_once():
                     overflow = self._extract_overflow_error(event)
                     if overflow and attempt == 0:
-                        recovered = await self.compaction.recover_from_overflow(self.session_id, self.branch_id)
+                        recovered = await self.compaction.recover_from_overflow(self.session_file, self.leaf_id)
                         if recovered is not None:
                             attempt += 1
                             self.resume_session()
@@ -270,7 +306,7 @@ class AgentSession:
                     return
             except Exception as exc:
                 if attempt == 0 and self._is_context_overflow_error(str(exc)):
-                    recovered = await self.compaction.recover_from_overflow(self.session_id, self.branch_id)
+                    recovered = await self.compaction.recover_from_overflow(self.session_file, self.leaf_id)
                     if recovered is not None:
                         attempt += 1
                         self.resume_session()
@@ -302,35 +338,33 @@ class AgentSession:
     def _persist_user_message(self, message: UserMessage) -> None:
         """把用户消息持久化为会话节点。"""
 
-        node = self.session_manager.append_message(
-            self.session_id,
-            message=UserMessage(content=message.content),
-            branch_id=self.branch_id,
-            parent_id=self.last_node_id,
+        if not self.session_file:
+            return
+        entry = self.session_manager.append_message(
+            self.session_file,
+            message=UserMessage(content=message.content, metadata=dict(message.metadata)),
+            parent_id=self.leaf_id,
         )
-        self.last_node_id = node.id
+        self.leaf_id = entry.id
+        self.branch_id = self.leaf_id or "main"
 
     def _persist_assistant(self, message: AssistantMessage) -> None:
         """把 assistant 消息持久化为会话节点。"""
 
-        node = self.session_manager.append_message(
-            self.session_id,
-            message=message,
-            branch_id=self.branch_id,
-            parent_id=self.last_node_id,
-        )
-        self.last_node_id = node.id
+        if not self.session_file:
+            return
+        entry = self.session_manager.append_message(self.session_file, message=message, parent_id=self.leaf_id)
+        self.leaf_id = entry.id
+        self.branch_id = self.leaf_id or "main"
 
     def _persist_tool_result(self, message: ToolResultMessage) -> None:
         """把工具结果消息持久化为会话节点。"""
 
-        node = self.session_manager.append_message(
-            self.session_id,
-            message=message,
-            branch_id=self.branch_id,
-            parent_id=self.last_node_id,
-        )
-        self.last_node_id = node.id
+        if not self.session_file:
+            return
+        entry = self.session_manager.append_message(self.session_file, message=message, parent_id=self.leaf_id)
+        self.leaf_id = entry.id
+        self.branch_id = self.leaf_id or "main"
 
     def _map_event(self, event: AgentEvent) -> list[SessionEvent]:
         """把 `agent_core` 事件转换成交互层事件。"""
@@ -472,13 +506,13 @@ class AgentSession:
 
         context = build_runtime_context_messages(
             self.session_manager,
-            self.session_id,
-            self.branch_id,
+            self.session_file,
+            self.leaf_id,
             self.model,
             self._build_system_prompt(),
             self.runtime.tools,
         )
-        return await self.compaction.maybe_compact_for_threshold(self.session_id, self.branch_id, self.model, context)
+        return await self.compaction.maybe_compact_for_threshold(self.session_file, self.leaf_id, self.model, context)
 
     async def _before_tool_call(self, context: BeforeToolCallContext):
         """在工具调用前允许执行，并把可见性留给工具事件。"""

@@ -46,10 +46,10 @@ def sync_channel_log_to_session(
 
     synced = set(session_ref.synced_message_ids)
     inserted = 0
-    parent_id = None
-    snapshot = session_manager.load_session(session_ref.session_id)
-    if snapshot.nodes:
-        parent_id = snapshot.nodes[-1].id
+    parent_id = session_ref.leaf_id
+    snapshot = session_manager.load_session(session_ref.session_file)
+    if snapshot.leaf_id:
+        parent_id = snapshot.leaf_id
 
     with log_file.open("r", encoding="utf-8") as handle:
         for line in handle:
@@ -67,12 +67,13 @@ def sync_channel_log_to_session(
             if message_id in synced:
                 continue
             node = session_manager.append_message(
-                session_ref.session_id,
+                session_ref.session_file,
                 message=UserMessage(content=_format_log_entry_for_agent(entry), metadata={"synced_from_log": True, "message_id": message_id}),
-                branch_id=session_ref.branch_id,
                 parent_id=parent_id,
             )
             parent_id = node.id
+            session_ref.leaf_id = node.id
+            session_ref.session_id = snapshot.session_id
             session_ref.synced_message_ids.append(message_id)
             synced.add(message_id)
             inserted += 1

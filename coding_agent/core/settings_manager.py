@@ -5,7 +5,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from .types import CodingAgentSettings, ToolPolicy
+from .types import BranchSummarySettings, CodingAgentSettings, CompactionSettings, ToolPolicy
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -36,16 +36,33 @@ class SettingsManager:
         project_data = self._load_json(self.project_settings_file) if self.project_settings_file else {}
         merged = _deep_merge(global_data, project_data)
         tool_policy = ToolPolicy(**merged.get("tool_policy", {}))
+        compaction_raw = dict(merged.get("compaction", {}))
+        compact_model = merged.get("compact_model", compaction_raw.get("compact_model"))
+        compaction = CompactionSettings(
+            enabled=bool(compaction_raw.get("enabled", merged.get("auto_compact", True))),
+            reserve_tokens=int(compaction_raw.get("reserve_tokens", compaction_raw.get("reserveTokens", 16384))),
+            keep_recent_tokens=int(
+                compaction_raw.get("keep_recent_tokens", compaction_raw.get("keepRecentTokens", 20000))
+            ),
+            compact_model=compact_model,
+        )
+        branch_summary_raw = dict(merged.get("branch_summary", {}))
+        branch_summary = BranchSummarySettings(
+            reserve_tokens=int(branch_summary_raw.get("reserve_tokens", branch_summary_raw.get("reserveTokens", 16384))),
+            skip_prompt=bool(branch_summary_raw.get("skip_prompt", branch_summary_raw.get("skipPrompt", False))),
+        )
         return CodingAgentSettings(
             default_model=merged.get("default_model", "openai:gpt-5"),
             default_thinking=merged.get("default_thinking", "medium"),
-            auto_compact=bool(merged.get("auto_compact", True)),
-            compact_threshold=float(merged.get("compact_threshold", 0.8)),
-            compact_keep_turns=int(merged.get("compact_keep_turns", 4)),
-            compact_model=merged.get("compact_model"),
             theme=merged.get("theme", "default"),
             system_prompt_override=merged.get("system_prompt_override"),
             tool_policy=tool_policy,
+            compaction=compaction,
+            branch_summary=branch_summary,
+            auto_compact=bool(merged.get("auto_compact", True)),
+            compact_threshold=float(merged.get("compact_threshold", 0.8)),
+            compact_keep_turns=int(merged.get("compact_keep_turns", 4)),
+            compact_model=compact_model,
         )
 
     def save_global(self, settings: CodingAgentSettings) -> None:

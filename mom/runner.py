@@ -150,8 +150,8 @@ class MomRunner:
             session_manager=self.session_manager,
             resource_loader=self.resource_loader,
             model_registry=self.model_registry,
-            session_id=session_ref.session_id,
-            branch_id=session_ref.branch_id,
+            session_id=session_ref.session_id or None,
+            session_file=session_ref.session_file,
             stream_fn=stream_fn,
         )  # 复用的频道 AgentSession。
 
@@ -163,6 +163,9 @@ class MomRunner:
         """执行一次聊天请求，包括同步历史、运行 Agent 和输出结果。"""
         self.session.update_chat_directory(ctx.chat_name, ctx.users, ctx.chats)
         sync_channel_log_to_session(self.session_manager, self.session_ref, self.chat_dir, exclude_message_id=ctx.message.message_id)
+        self.session_ref.session_id = self.session.session_id
+        self.session_ref.session_file = self.session.session_file or self.session_ref.session_file
+        self.session_ref.leaf_id = self.session.leaf_id
         store.save_session_ref(self.chat_id, self.session_ref)
         self.session.resume_session()
         self.session.send_user_message(_format_event_message(ctx.message.sender_name, ctx.message.text, ctx.message.attachments))
@@ -186,6 +189,10 @@ class MomRunner:
                     detail_count,
                     suppressed_events_count,
                 )
+            self.session_ref.session_id = self.session.session_id
+            self.session_ref.session_file = self.session.session_file or self.session_ref.session_file
+            self.session_ref.leaf_id = self.session.leaf_id
+            store.save_session_ref(self.chat_id, self.session_ref)
             await ctx.set_working(False)
         except asyncio.CancelledError:
             await ctx.set_working(False)

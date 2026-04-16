@@ -30,6 +30,21 @@ def main(argv: list[str] | None = None) -> int:
         extensions_dir=paths.extensions_dir,
         workspace_root=workspace_root,
     )
+    session_file: str | None = None
+    if args.fork:
+        source = session_manager.resolve_session_file(args.fork)
+        if source is None:
+            raise FileNotFoundError(f"Unknown fork source: {args.fork}")
+        session_file = str(session_manager.create_branched_session(source, session_manager.get_leaf_id(source) or "").resolve())
+    elif args.session:
+        resolved = session_manager.resolve_session_file(args.session)
+        if resolved is None:
+            raise FileNotFoundError(f"Unknown session: {args.session}")
+        session_file = str(resolved)
+    elif args.resume or args.continue_session:
+        recent = session_manager.list_recent_sessions(limit=1, cwd=workspace_root)
+        if recent:
+            session_file = str(recent[0]["session_file"])
     session = AgentSession(
         workspace_root=workspace_root,
         cwd=workspace_root,
@@ -39,9 +54,10 @@ def main(argv: list[str] | None = None) -> int:
         session_manager=session_manager,
         resource_loader=resource_loader,
         model_registry=registry,
-        session_id=None if args.new else args.session,
+        session_id=None,
+        session_file=None if args.new else session_file,
     )
-    if args.session:
+    if session_file:
         session.resume_session()
     if args.compact:
         asyncio.run(session.compact())

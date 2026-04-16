@@ -234,6 +234,8 @@ class InteractiveRenderer:
         scroll_mode = "Follow Latest" if self.state.auto_follow_output else "Viewing History"
         lines = [
             ("class:status", f"Session: {self.state.session_id}\n"),
+            ("class:status", f"Session File: {self.state.session_file or '-'}\n"),
+            ("class:status", f"Leaf: {self.state.leaf_id or '-'}\n"),
             ("class:status", f"Model: {self.state.model_id}\n"),
             ("class:status", f"Thinking: {self.state.thinking or 'default'}\n"),
             ("class:status", f"CWD: {self.state.cwd}\n"),

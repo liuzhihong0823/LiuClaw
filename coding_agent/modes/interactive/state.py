@@ -65,6 +65,8 @@ class InteractiveState:
     """保存交互界面的全部可见状态。"""
 
     session_id: str  # 当前会话 ID。
+    session_file: str  # 当前会话文件。
+    leaf_id: str  # 当前叶子节点。
     model_id: str  # 当前模型 ID。
     thinking: str | None  # 当前思考等级。
     cwd: Path  # 当前工作目录。
@@ -105,6 +107,8 @@ class InteractiveState:
 
         return cls(
             session_id=session.session_id,
+            session_file=session.session_file or "",
+            leaf_id=session.leaf_id or "",
             model_id=session.model.id,
             thinking=session.thinking,
             cwd=session.cwd,
@@ -117,6 +121,8 @@ class InteractiveState:
         """把会话对象中的最新信息同步到界面状态。"""
 
         self.session_id = session.session_id
+        self.session_file = session.session_file or ""
+        self.leaf_id = session.leaf_id or ""
         self.model_id = session.model.id
         self.thinking = session.thinking
         self.cwd = session.cwd

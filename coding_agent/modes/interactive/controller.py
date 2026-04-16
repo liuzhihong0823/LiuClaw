@@ -24,7 +24,25 @@ class CommandCompleter(Completer):
         """根据当前输入生成补全项。"""
 
         text = document.text_before_cursor
-        commands = ["/new", "/resume", "/model", "/thinking", "/compact", "/theme", "/pwd", "/exit", "/sessions", "/help", "/clear", "/retry", "/bottom", "/top"]
+        commands = [
+            "/new",
+            "/resume",
+            "/fork",
+            "/branch",
+            "/label",
+            "/model",
+            "/thinking",
+            "/compact",
+            "/theme",
+            "/pwd",
+            "/exit",
+            "/sessions",
+            "/help",
+            "/clear",
+            "/retry",
+            "/bottom",
+            "/top",
+        ]
         if not text.startswith("/"):
             return
         parts = text.split()
@@ -39,7 +57,11 @@ class CommandCompleter(Completer):
         if command == "/model":
             candidates = [model.id for model in self.controller.model_registry.list()]
         elif command == "/resume":
-            candidates = [item["session_id"] for item in self.controller.session_manager.list_recent_sessions(limit=20)]
+            recent = self.controller.session_manager.list_recent_sessions(limit=20, cwd=self.controller.session.cwd)
+            candidates = [item["session_file"] for item in recent] + [item["session_id"] for item in recent]
+        elif command == "/branch":
+            if self.controller.session.session_file:
+                candidates = [entry.id for entry in self.controller.session_manager.get_entries(self.controller.session.session_file)]
         elif command == "/theme":
             candidates = list(self.controller.session.resource_loader.load().themes.keys())
         elif command == "/thinking":
@@ -135,25 +157,77 @@ class InteractiveController:
                 session_manager=self.session_manager,
                 resource_loader=self.session.resource_loader,
                 model_registry=self.session.model_registry,
+                session_file=None,
             )
             self.state.clear_output()
             if hasattr(self.renderer, "sync_transcript"):
                 self.renderer.sync_transcript(self.state)
             self.state.add_status(f"新会话已创建: {self.session.session_id}")
         elif command == "/resume":
-            session_id = args[0] if args else self._default_resume_session_id()
-            if session_id is None:
+            session_ref = args[0] if args else self._default_resume_session_ref()
+            if session_ref is None:
                 self.state.last_error = "没有可恢复的会话"
                 return
-            snapshot = self.session_manager.load_session(session_id)
-            self.session.session_id = session_id
+            snapshot = self.session_manager.load_session(session_ref)
+            self.session.session_id = snapshot.session_id
+            self.session.session_file = str(snapshot.session_file)
+            self.session.leaf_id = snapshot.leaf_id
             self.session.branch_id = snapshot.branch_id
             self.session.cwd = snapshot.cwd
             self.session.resume_session()
             self.state.clear_output()
             if hasattr(self.renderer, "sync_transcript"):
                 self.renderer.sync_transcript(self.state)
-            self.state.add_status(f"已恢复会话 {session_id}")
+            self.state.add_status(f"已恢复会话 {snapshot.session_id}")
+        elif command == "/fork":
+            source = args[0] if args else self._default_resume_session_ref()
+            if source is None:
+                self.state.last_error = "没有可 fork 的会话"
+                return
+            source_file = self.session_manager.resolve_session_file(source)
+            if source_file is None:
+                self.state.last_error = f"未知会话: {source}"
+                return
+            leaf_id = self.session_manager.get_leaf_id(source_file)
+            if leaf_id is None:
+                self.state.last_error = "源会话没有可 fork 的历史"
+                return
+            new_file = self.session_manager.create_branched_session(source_file, leaf_id)
+            snapshot = self.session_manager.load_session(new_file)
+            self.session.session_id = snapshot.session_id
+            self.session.session_file = str(snapshot.session_file)
+            self.session.leaf_id = snapshot.leaf_id
+            self.session.branch_id = snapshot.branch_id
+            self.session.cwd = snapshot.cwd
+            self.session.resume_session()
+            self.state.clear_output()
+            if hasattr(self.renderer, "sync_transcript"):
+                self.renderer.sync_transcript(self.state)
+            self.state.add_status(f"已 fork 到新会话 {snapshot.session_id}")
+        elif command == "/branch":
+            if not args:
+                self.show_help("用法: /branch <entry_id>")
+                return
+            if not self.session.session_file:
+                self.state.last_error = "当前没有活动会话"
+                return
+            snapshot = self.session_manager.branch(self.session.session_file, args[0])
+            self.session.leaf_id = snapshot.leaf_id
+            self.session.branch_id = snapshot.branch_id
+            self.session.resume_session()
+            self.state.clear_output()
+            if hasattr(self.renderer, "sync_transcript"):
+                self.renderer.sync_transcript(self.state)
+            self.state.add_status(f"已切换到分支节点 {args[0]}")
+        elif command == "/label":
+            if len(args) < 2:
+                self.show_help("用法: /label <entry_id> <name>")
+                return
+            if not self.session.session_file:
+                self.state.last_error = "当前没有活动会话"
+                return
+            self.session_manager.append_label_change(self.session.session_file, args[0], " ".join(args[1:]))
+            self.state.add_status(f"已标记 {args[0]}")
         elif command == "/model":
             if not args:
                 self.show_help("用法: /model <model_id>")
@@ -191,10 +265,12 @@ class InteractiveController:
             if not recent:
                 self.state.add_status("暂无最近会话")
             for item in recent:
-                self.state.add_status(f"{item['session_id']} | {item.get('title', '')} | {item.get('model_id', '')}")
+                self.state.add_status(
+                    f"{item['session_id']} | {item.get('title', '')} | {item.get('model_id', '')} | {item.get('session_file', '')}"
+                )
         elif command == "/help":
             self.show_help(
-                "Commands: /new /resume [id] /model <id> /thinking <level> /compact /theme <name> /pwd /sessions /clear /retry /exit"
+                "Commands: /new /resume [session] /fork [session] /branch <entry_id> /label <entry_id> <name> /model <id> /thinking <level> /compact /theme <name> /pwd /sessions /clear /retry /exit"
             )
         elif command == "/clear":
             self.clear_output()
@@ -249,13 +325,13 @@ class InteractiveController:
         self.state.add_status(message)
         self.renderer.invalidate()
 
-    def _default_resume_session_id(self) -> str | None:
-        """返回默认用于恢复的最近会话 ID。"""
+    def _default_resume_session_ref(self) -> str | None:
+        """返回默认用于恢复的最近会话引用。"""
 
         recent = self.session.list_recent_sessions(limit=1)
         if not recent:
             return None
-        return recent[0]["session_id"]
+        return recent[0].get("session_file") or recent[0]["session_id"]
 
     def scroll_main_up(self) -> None:
         """向上滚动主输出区一行。"""

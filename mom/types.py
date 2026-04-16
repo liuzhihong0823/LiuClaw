@@ -113,8 +113,9 @@ class MomRenderConfig:
 class SessionRef:
     """频道与 Agent 会话之间的持久化引用。"""
 
-    session_id: str  # 底层会话 ID。
-    branch_id: str = "main"  # 当前分支 ID。
+    session_file: str  # 底层会话文件。
+    session_id: str = ""  # 兼容展示用途保留。
+    leaf_id: str | None = None  # 当前叶子节点。
     synced_message_ids: list[str] = field(default_factory=list)  # 已同步进会话的消息 ID。
 
 

@@ -22,12 +22,9 @@ class CompactionCoordinator:
         thinking: str | None,
         registry=None,
         model_resolver=None,
-        keep_turns: int | None = None,
     ) -> None:
-        """初始化压缩协调器。"""
-
-        self.session_manager = session_manager  # 会话管理器。
-        self.settings = settings  # 当前压缩相关设置。
+        self.session_manager = session_manager
+        self.settings = settings
         self.compactor = SessionCompactor(
             session_manager,
             CompactionRuntime(
@@ -37,35 +34,26 @@ class CompactionCoordinator:
                 registry=registry,
                 model_resolver=model_resolver,
             ),
-            keep_turns=keep_turns or settings.compact_keep_turns,
-        )  # 实际执行压缩的对象。
+        )
 
-    async def compact_manual(self, session_id: str, branch_id: str | None = None) -> CompactResult:
-        """手动触发压缩。"""
+    async def compact_manual(self, session_ref: str, leaf_id: str | None = None, custom_instructions: str | None = None) -> CompactResult:
+        return await self.compactor.compact_session(session_ref, leaf_id=leaf_id, custom_instructions=custom_instructions)
 
-        return await self.compactor.compact_session(session_id, branch_id)
-
-    async def maybe_compact_for_threshold(self, session_id: str, branch_id: str, model: Model, context: Context) -> CompactResult | None:
-        """在发送前根据阈值判断是否触发压缩。"""
-
-        if not self.settings.auto_compact:
+    async def maybe_compact_for_threshold(self, session_ref: str, leaf_id: str | None, model: Model, context: Context) -> CompactResult | None:
+        if not self.settings.compaction.enabled:
             return None
         report = detect_context_overflow(model, context)
         ratio = report.total_tokens / report.limit if report.limit else 0.0
         stats = ContextStats(estimated_tokens=report.total_tokens, limit=report.limit, ratio=ratio)
         if should_compact(stats, self.settings, model):
-            return await self.compactor.compact_session(session_id, branch_id)
+            return await self.compactor.compact_session(session_ref, leaf_id=leaf_id)
         return None
 
-    async def recover_from_overflow(self, session_id: str, branch_id: str) -> CompactResult | None:
-        """在上下文溢出时尝试压缩并恢复。"""
-
-        result = await self.compactor.compact_session(session_id, branch_id)
+    async def recover_from_overflow(self, session_ref: str, leaf_id: str | None) -> CompactResult | None:
+        result = await self.compactor.compact_session(session_ref, leaf_id=leaf_id)
         if result.compacted_count <= 0:
             return None
         return result
 
-    async def summarize_branch(self, session_id: str, branch_id: str) -> str:
-        """为分支切换生成摘要。"""
-
-        return await summarize_branch_on_switch(self.compactor, session_id, branch_id)
+    async def summarize_branch(self, session_ref: str, old_leaf_id: str | None, target_leaf_id: str | None) -> str:
+        return await summarize_branch_on_switch(self.compactor, session_ref, old_leaf_id, target_leaf_id)

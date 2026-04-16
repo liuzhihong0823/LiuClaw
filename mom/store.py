@@ -89,14 +89,24 @@ class MomStore:
         """获取频道对应会话；若不存在则创建一条新的 Agent 会话引用。"""
         index = self.load_channel_index()
         item = index.get(chat_id)
-        if isinstance(item, dict) and item.get("session_id"):
+        if isinstance(item, dict) and (item.get("session_file") or item.get("session_id")):
+            session_file = item.get("session_file")
+            if not session_file and item.get("session_id"):
+                resolved = session_manager.resolve_session_file(str(item["session_id"]))
+                session_file = str(resolved) if resolved is not None else ""
+            if not session_file:
+                snapshot = session_manager.create_session(cwd=self.channel_dir(chat_id), model_id=model_id, title=f"mom:{chat_id}")
+                ref = SessionRef(session_file=str(snapshot.session_file), session_id=snapshot.session_id, leaf_id=snapshot.leaf_id, synced_message_ids=[])
+                self.save_session_ref(chat_id, ref)
+                return ref
             return SessionRef(
-                session_id=str(item["session_id"]),
-                branch_id=str(item.get("branch_id", "main")),
+                session_file=str(session_file or ""),
+                session_id=str(item.get("session_id", "")),
+                leaf_id=item.get("leaf_id"),
                 synced_message_ids=[str(value) for value in item.get("synced_message_ids", [])],
             )
         snapshot = session_manager.create_session(cwd=self.channel_dir(chat_id), model_id=model_id, title=f"mom:{chat_id}")
-        ref = SessionRef(session_id=snapshot.session_id, branch_id=snapshot.branch_id, synced_message_ids=[])
+        ref = SessionRef(session_file=str(snapshot.session_file), session_id=snapshot.session_id, leaf_id=snapshot.leaf_id, synced_message_ids=[])
         self.save_session_ref(chat_id, ref)
         return ref
 
@@ -104,8 +114,9 @@ class MomStore:
         """保存频道与会话之间的引用关系。"""
         index = self.load_channel_index()
         index[chat_id] = {
+            "session_file": ref.session_file,
             "session_id": ref.session_id,
-            "branch_id": ref.branch_id,
+            "leaf_id": ref.leaf_id,
             "synced_message_ids": list(dict.fromkeys(ref.synced_message_ids)),
         }
         self.save_channel_index(index)

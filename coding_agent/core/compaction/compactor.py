@@ -1,141 +1,291 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from ai import Context, Model, ProviderRegistry, UserMessage, completeSimple
+from ai.utils.context_window import estimate_context_tokens
+from ai.types import AssistantMessage, ConversationMessage, ToolResultMessage
 
 from ..session_manager import SessionManager
-from ..types import CompactResult, CodingAgentSettings
+from ..types import CompactResult, CompactionSettings, SessionEntry, SessionMessageEntry
 
-SUMMARY_SYSTEM_PROMPT = """你是一个会话压缩器，负责把较早的 Agent 历史整理成后续继续工作的摘要。
+SUMMARY_SYSTEM_PROMPT = """You compress earlier agent history into a checkpoint summary for continued work.
 
-请严格遵守以下要求：
-1. 只输出下面 5 个一级标题，顺序不可改变：
-任务目标
-关键上下文
-已完成事项
-未完成事项
-风险与注意点
-2. 每个标题下使用简洁短句或短列表，不要写寒暄、解释或额外标题。
-3. 保留后续继续任务真正需要的信息，避免复述无关细节。
-4. 如果信息不足，也要保留标题，并写“暂无”。
-5. 若涉及工具调用，优先总结工具名、用途、关键结果和失败信息。
-6. 不要输出 Markdown 代码块。
+Use this EXACT format:
+
+## Goal
+[Current objective]
+
+## Constraints & Preferences
+- [constraints]
+
+## Progress
+### Done
+- [x] completed work
+
+### In Progress
+- [ ] work underway
+
+### Blocked
+- [issues blocking progress]
+
+## Key Decisions
+- **Decision**: rationale
+
+## Next Steps
+1. next action
+
+## Critical Context
+- important files, errors, tool results, or references
+
+Keep it concise and preserve exact file paths, identifiers, and errors when important."""
+
+TURN_PREFIX_PROMPT = """Summarize the earlier prefix of a split turn so the retained suffix still makes sense.
+
+Use this exact format:
+
+## Original Request
+[what the user asked in this turn]
+
+## Early Progress
+- key work completed in the discarded prefix
+
+## Context for Suffix
+- context needed to understand the retained suffix
 """
 
 
 @dataclass(slots=True)
 class CompactionRuntime:
-    """描述压缩摘要生成时所需的运行时依赖。"""
-
     model: Model
     thinking: str | None
-    settings: CodingAgentSettings
+    settings: Any
     registry: ProviderRegistry | None = None
     model_resolver: Any | None = None
+
+
+@dataclass(slots=True)
+class CutPointResult:
+    first_kept_index: int
+    turn_start_index: int
+    is_split_turn: bool
+
+
+@dataclass(slots=True)
+class CompactionPreparation:
+    first_kept_entry_id: str
+    messages_to_summarize: list[ConversationMessage]
+    turn_prefix_messages: list[ConversationMessage]
+    is_split_turn: bool
+    tokens_before: int
+    previous_summary: str | None
+    details: dict[str, Any]
 
 
 class SessionCompactor:
     """负责选择旧消息并生成会话摘要。"""
 
-    def __init__(
-        self,
-        session_manager: SessionManager,
-        runtime: CompactionRuntime,
-        keep_turns: int = 4,
-    ) -> None:
-        """初始化压缩器并配置保留的最近对话轮数。"""
+    def __init__(self, session_manager: SessionManager, runtime: CompactionRuntime) -> None:
+        self.session_manager = session_manager
+        self.runtime = runtime
 
-        self.session_manager = session_manager  # 会话管理器。
-        self.runtime = runtime  # 摘要生成所需运行时。
-        self.keep_turns = keep_turns  # 压缩时保留的最近 turn 数。
-
-    async def compact_session(self, session_id: str, branch_id: str | None = None) -> CompactResult:
-        """压缩指定会话分支的旧消息并写入摘要事件。"""
-
-        snapshot = self.session_manager.load_session(session_id)
-        active_branch = branch_id or snapshot.branch_id
-        nodes = [node for node in snapshot.nodes if node.branch_id == active_branch]
-        keep_count = self.keep_turns * 2
-        compacted = nodes[:-keep_count] if len(nodes) > keep_count else []
-        if not compacted:
-            return CompactResult(summary="", compacted_count=0, branch_id=active_branch, node_ids=[])
-        summary = await self._summarize_nodes(compacted)
+    async def compact_session(self, session_ref: str, leaf_id: str | None = None, custom_instructions: str | None = None) -> CompactResult:
+        snapshot = self.session_manager.load_session(session_ref)
+        path_entries = self.session_manager.get_branch(snapshot.session_file, leaf_id)
+        preparation = self.prepare_compaction(path_entries, self.runtime.settings.compaction)
+        if preparation is None:
+            return CompactResult(summary="", compacted_count=0, first_kept_entry_id="", tokens_before=0)
+        summary = await self._generate_compaction_summary(preparation, custom_instructions=custom_instructions)
         if not summary:
-            return CompactResult(summary="", compacted_count=0, branch_id=active_branch, node_ids=[])
-        node_ids = [node.id for node in compacted]
-        self.session_manager.append_summary(session_id, branch_id=active_branch, summary=summary, node_ids=node_ids)
-        return CompactResult(summary=summary, compacted_count=len(compacted), branch_id=active_branch, node_ids=node_ids)
+            return CompactResult(summary="", compacted_count=0, first_kept_entry_id="", tokens_before=preparation.tokens_before)
+        self.session_manager.append_compaction(
+            snapshot.session_file,
+            summary=summary,
+            first_kept_entry_id=preparation.first_kept_entry_id,
+            tokens_before=preparation.tokens_before,
+            details=preparation.details,
+        )
+        compacted_count = len(preparation.messages_to_summarize) + len(preparation.turn_prefix_messages)
+        return CompactResult(
+            summary=summary,
+            compacted_count=compacted_count,
+            first_kept_entry_id=preparation.first_kept_entry_id,
+            tokens_before=preparation.tokens_before,
+            details=preparation.details,
+        )
 
-    async def _summarize_nodes(self, nodes) -> str:
-        """把一组旧节点转换成由模型生成的结构化摘要。"""
+    def prepare_compaction(self, path_entries: list[SessionEntry], settings: CompactionSettings) -> CompactionPreparation | None:
+        if path_entries and path_entries[-1].type == "compaction":
+            return None
 
-        history_text = self._build_summary_input(nodes)
-        summary_model = self._resolve_summary_model()
-        try:
-            message = await completeSimple(
-                summary_model,
-                Context(
-                    systemPrompt=SUMMARY_SYSTEM_PROMPT,
-                    messages=[
-                        UserMessage(
-                            content=(
-                                "请基于下面这段较早的会话历史，生成供后续继续工作的结构化摘要。\n\n"
-                                f"{history_text}"
-                            )
-                        )
-                    ],
-                    tools=[],
-                ),
-                reasoning=self.runtime.thinking,
-                registry=self.runtime.registry,
-            )
-        except Exception:
-            return ""
-        summary = str(message.content).strip()
-        return summary
+        previous_summary: str | None = None
+        boundary_start = 0
+        for index in range(len(path_entries) - 1, -1, -1):
+            entry = path_entries[index]
+            if entry.type == "compaction":
+                previous_summary = getattr(entry, "summary", "")
+                first_kept_id = getattr(entry, "first_kept_entry_id", "")
+                boundary_start = next((i for i, item in enumerate(path_entries) if item.id == first_kept_id), index + 1)
+                break
+
+        messages = self._messages_from_entries(path_entries)
+        tokens_before = estimate_context_tokens(Context(messages=messages))
+        cut_point = self.find_cut_point(path_entries, boundary_start, len(path_entries), settings.keep_recent_tokens)
+        first_kept_entry = path_entries[cut_point.first_kept_index] if 0 <= cut_point.first_kept_index < len(path_entries) else None
+        if first_kept_entry is None:
+            return None
+
+        history_end = cut_point.turn_start_index if cut_point.is_split_turn else cut_point.first_kept_index
+        messages_to_summarize = self._messages_from_entries(path_entries[boundary_start:history_end], include_compactions=False)
+        turn_prefix_messages = self._messages_from_entries(path_entries[cut_point.turn_start_index:cut_point.first_kept_index], include_compactions=False) if cut_point.is_split_turn else []
+        if not messages_to_summarize and not turn_prefix_messages:
+            return None
+        details = self._extract_file_details(messages_to_summarize + turn_prefix_messages)
+        return CompactionPreparation(
+            first_kept_entry_id=first_kept_entry.id,
+            messages_to_summarize=messages_to_summarize,
+            turn_prefix_messages=turn_prefix_messages,
+            is_split_turn=cut_point.is_split_turn,
+            tokens_before=tokens_before,
+            previous_summary=previous_summary,
+            details=details,
+        )
+
+    def find_cut_point(self, entries: list[SessionEntry], start_index: int, end_index: int, keep_recent_tokens: int) -> CutPointResult:
+        message_indexes = [index for index in range(start_index, end_index) if entries[index].type == "message"]
+        if not message_indexes:
+            return CutPointResult(first_kept_index=start_index, turn_start_index=-1, is_split_turn=False)
+
+        accumulated_tokens = 0
+        cut_index = message_indexes[0]
+        for index in range(end_index - 1, start_index - 1, -1):
+            entry = entries[index]
+            if entry.type != "message":
+                continue
+            accumulated_tokens += self._estimate_entry_tokens(entry)
+            if accumulated_tokens >= keep_recent_tokens:
+                cut_index = next((item for item in message_indexes if item >= index), message_indexes[0])
+                break
+
+        while cut_index > start_index and entries[cut_index - 1].type != "message" and entries[cut_index - 1].type != "compaction":
+            cut_index -= 1
+
+        is_user_message = isinstance(getattr(entries[cut_index], "message", None), UserMessage)
+        turn_start_index = -1 if is_user_message else self._find_turn_start(entries, cut_index, start_index)
+        return CutPointResult(first_kept_index=cut_index, turn_start_index=turn_start_index, is_split_turn=not is_user_message and turn_start_index != -1)
+
+    async def _generate_compaction_summary(self, preparation: CompactionPreparation, custom_instructions: str | None = None) -> str:
+        history_summary = await self._summarize_messages(preparation.messages_to_summarize, custom_instructions, preparation.previous_summary)
+        if preparation.is_split_turn and preparation.turn_prefix_messages:
+            turn_prefix = await self._summarize_turn_prefix(preparation.turn_prefix_messages)
+            summary = f"{history_summary}\n\n---\n\n**Turn Context (split turn):**\n\n{turn_prefix}"
+        else:
+            summary = history_summary
+        return summary + self._format_file_details(preparation.details)
+
+    async def _summarize_messages(
+        self,
+        messages: list[ConversationMessage],
+        custom_instructions: str | None,
+        previous_summary: str | None,
+    ) -> str:
+        if not messages and not previous_summary:
+            return "## Goal\n暂无\n\n## Constraints & Preferences\n- (none)\n\n## Progress\n### Done\n- [x] (none)\n\n### In Progress\n- [ ] (none)\n\n### Blocked\n- (none)\n\n## Key Decisions\n- **None**: no prior decisions recorded\n\n## Next Steps\n1. Continue from the retained recent context\n\n## Critical Context\n- (none)"
+        history_text = self._serialize_messages(messages)
+        prompt = f"<conversation>\n{history_text}\n</conversation>\n\n"
+        if previous_summary:
+            prompt += f"<previous-summary>\n{previous_summary}\n</previous-summary>\n\nUpdate the previous summary with the new messages while preserving relevant information.\n\n"
+        if custom_instructions:
+            prompt += f"Additional focus: {custom_instructions}\n\n"
+        prompt += SUMMARY_SYSTEM_PROMPT
+        message = await completeSimple(
+            self._resolve_summary_model(),
+            Context(systemPrompt="You summarize conversation history into structured checkpoints.", messages=[UserMessage(content=prompt)], tools=[]),
+            reasoning=self.runtime.thinking,
+            registry=self.runtime.registry,
+        )
+        return str(message.content).strip()
+
+    async def _summarize_turn_prefix(self, messages: list[ConversationMessage]) -> str:
+        prompt = f"<conversation>\n{self._serialize_messages(messages)}\n</conversation>\n\n{TURN_PREFIX_PROMPT}"
+        message = await completeSimple(
+            self._resolve_summary_model(),
+            Context(systemPrompt="You summarize turn prefixes for compaction.", messages=[UserMessage(content=prompt)], tools=[]),
+            reasoning=self.runtime.thinking,
+            registry=self.runtime.registry,
+        )
+        return str(message.content).strip()
 
     def _resolve_summary_model(self) -> Model:
-        """解析本次摘要生成所使用的模型。"""
-
-        compact_model = self.runtime.settings.compact_model
-        if compact_model:
+        compact_model = self.runtime.settings.compaction.compact_model or self.runtime.settings.compact_model
+        if compact_model and self.runtime.model_resolver is not None:
             resolver = self.runtime.model_resolver
-            if resolver is not None:
-                return resolver.get(compact_model) if hasattr(resolver, "get") else resolver(compact_model)
+            return resolver.get(compact_model) if hasattr(resolver, "get") else resolver(compact_model)
         return self.runtime.model
 
-    @staticmethod
-    def _build_summary_input(nodes) -> str:
-        """把一组旧节点转换成稳定的摘要输入文本。"""
+    def _serialize_messages(self, messages: list[ConversationMessage]) -> str:
+        lines: list[str] = []
+        for message in messages:
+            if isinstance(message, UserMessage):
+                lines.append(f"[USER]\n{message.text}")
+            elif isinstance(message, AssistantMessage):
+                lines.append(f"[ASSISTANT]\n{message.text}")
+                if message.thinking:
+                    lines.append(f"[THINKING]\n{message.thinking}")
+                for tool_call in message.toolCalls:
+                    lines.append(f"[TOOL_CALL:{tool_call.name}]\n{tool_call.arguments_text}")
+            elif isinstance(message, ToolResultMessage):
+                lines.append(f"[TOOL_RESULT:{message.toolName}]\n{message.text}")
+        return "\n---\n".join(lines)
 
-        lines: list[str] = ["[较早会话历史]"]
-        for node in nodes:
-            if node.role == "tool":
-                content = str(node.content).strip().replace("\n", " ")
-                if len(content) > 240:
-                    content = content[:240] + "..."
-                lines.extend(
-                    [
-                        "- role: tool",
-                        f"  tool_name: {node.tool_name or 'unknown'}",
-                        f"  tool_call_id: {node.tool_call_id or ''}",
-                        f"  result: {content}",
-                    ]
-                )
+    def _messages_from_entries(self, entries: list[SessionEntry], include_compactions: bool = True) -> list[ConversationMessage]:
+        messages: list[ConversationMessage] = []
+        for entry in entries:
+            if isinstance(entry, SessionMessageEntry):
+                messages.append(entry.message)
+            elif include_compactions and entry.type == "compaction":
+                messages.append(UserMessage(content=f"[Session Summary]\n{getattr(entry, 'summary', '')}", metadata={"summary": True}))
+            elif include_compactions and entry.type == "branch_summary":
+                messages.append(UserMessage(content=f"[Branch Summary]\n{getattr(entry, 'summary', '')}", metadata={"branch_summary": True}))
+        return messages
+
+    def _estimate_entry_tokens(self, entry: SessionEntry) -> int:
+        if not isinstance(entry, SessionMessageEntry):
+            return max(1, len(json.dumps(entry.details if hasattr(entry, "details") else asdict(entry), ensure_ascii=False)) // 3)  # type: ignore[name-defined]
+        return estimate_context_tokens(Context(messages=[entry.message]))
+
+    def _find_turn_start(self, entries: list[SessionEntry], cut_index: int, start_index: int) -> int:
+        for index in range(cut_index, start_index - 1, -1):
+            entry = entries[index]
+            if isinstance(getattr(entry, "message", None), UserMessage):
+                return index
+        return -1
+
+    def _extract_file_details(self, messages: list[ConversationMessage]) -> dict[str, Any]:
+        read_files: set[str] = set()
+        modified_files: set[str] = set()
+        for message in messages:
+            if not isinstance(message, AssistantMessage):
                 continue
+            for tool_call in message.toolCalls:
+                if tool_call.name in {"read", "open"}:
+                    path = tool_call.arguments.get("path") if isinstance(tool_call.arguments, dict) else None
+                    if path:
+                        read_files.add(str(path))
+                if tool_call.name in {"write", "edit", "truncate"}:
+                    path = tool_call.arguments.get("path") if isinstance(tool_call.arguments, dict) else None
+                    if path:
+                        modified_files.add(str(path))
+        return {"readFiles": sorted(read_files), "modifiedFiles": sorted(modified_files)}
 
-            content = str(node.content).strip().replace("\n", " ")
-            if len(content) > 240:
-                content = content[:240] + "..."
-            lines.append(f"- role: {node.role}")
-            lines.append(f"  content: {content}")
-            if node.thinking:
-                thinking = node.thinking.strip().replace("\n", " ")
-                if len(thinking) > 240:
-                    thinking = thinking[:240] + "..."
-                lines.append(f"  thinking: {thinking}")
-            if node.tool_calls:
-                lines.append(f"  tool_calls: {node.tool_calls}")
-        return "\n".join(lines)
+    def _format_file_details(self, details: dict[str, Any]) -> str:
+        read_files = details.get("readFiles", [])
+        modified_files = details.get("modifiedFiles", [])
+        parts: list[str] = []
+        if read_files:
+            parts.append("\n\nRead files:\n" + "\n".join(f"- {item}" for item in read_files))
+        if modified_files:
+            parts.append("\n\nModified files:\n" + "\n".join(f"- {item}" for item in modified_files))
+        return "".join(parts)
