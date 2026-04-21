@@ -72,7 +72,7 @@ def test_sync_channel_log_to_session_uses_message_ids(tmp_path: Path) -> None:
     store.log_event(event)
 
     inserted = sync_channel_log_to_session(session_manager, ref, store.channel_dir("chat-1"))
-    messages = session_manager.build_context_messages(ref.session_id, ref.branch_id)
+    messages = session_manager.build_context_messages(ref.leaf_id)
 
     assert inserted == 1
     assert ref.synced_message_ids == ["m-1"]

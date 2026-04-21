@@ -35,7 +35,8 @@ def main(argv: list[str] | None = None) -> int:
         source = session_manager.resolve_session_file(args.fork)
         if source is None:
             raise FileNotFoundError(f"Unknown fork source: {args.fork}")
-        session_file = str(session_manager.create_branched_session(source, session_manager.get_leaf_id(source) or "").resolve())
+        session_manager.open(source)
+        session_file = str(session_manager.create_branched_session(session_manager.get_leaf_id() or "").resolve())
     elif args.session:
         resolved = session_manager.resolve_session_file(args.session)
         if resolved is None:

@@ -102,16 +102,18 @@ class SessionCompactor:
     async def compact_session(self, session_ref: str, leaf_id: str | None = None, custom_instructions: str | None = None) -> CompactResult:
         """对指定会话分支执行一次完整的上下文压缩。"""
 
-        snapshot = self.session_manager.load_session(session_ref)
-        path_entries = self.session_manager.get_branch(snapshot.session_file, leaf_id)
+        self.session_manager.set_session_file(session_ref)
+        path_entries = self.session_manager.get_branch(leaf_id)
         preparation = self.prepare_compaction(path_entries, self.runtime.settings.compaction)
         if preparation is None:
             return CompactResult(summary="", compacted_count=0, first_kept_entry_id="", tokens_before=0)
-        summary = await self._generate_compaction_summary(preparation, custom_instructions=custom_instructions)
+        try:
+            summary = await self._generate_compaction_summary(preparation, custom_instructions=custom_instructions)
+        except Exception:
+            return CompactResult(summary="", compacted_count=0, first_kept_entry_id="", tokens_before=preparation.tokens_before)
         if not summary:
             return CompactResult(summary="", compacted_count=0, first_kept_entry_id="", tokens_before=preparation.tokens_before)
         self.session_manager.append_compaction(
-            snapshot.session_file,
             summary=summary,
             first_kept_entry_id=preparation.first_kept_entry_id,
             tokens_before=preparation.tokens_before,

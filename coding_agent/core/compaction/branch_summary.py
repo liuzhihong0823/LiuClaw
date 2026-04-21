@@ -13,9 +13,9 @@ async def summarize_branch_on_switch(
 
     if old_leaf_id is None or old_leaf_id == target_leaf_id:
         return ""
-    snapshot = compactor.session_manager.load_session(session_ref)
-    old_branch = compactor.session_manager.get_branch(snapshot.session_file, old_leaf_id)
-    target_branch_ids = {entry.id for entry in compactor.session_manager.get_branch(snapshot.session_file, target_leaf_id)}
+    compactor.session_manager.set_session_file(session_ref)
+    old_branch = compactor.session_manager.get_branch(old_leaf_id)
+    target_branch_ids = {entry.id for entry in compactor.session_manager.get_branch(target_leaf_id)}
     entries_to_summarize = [entry for entry in old_branch if entry.id not in target_branch_ids]
     messages = compactor._messages_from_entries(entries_to_summarize, include_compactions=True)
     if not messages:

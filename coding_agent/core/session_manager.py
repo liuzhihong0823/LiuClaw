@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -22,7 +21,6 @@ from .types import (
     SessionInfo,
     SessionInfoEntry,
     SessionMessageEntry,
-    SessionSnapshot,
     SessionTreeNode,
     ThinkingLevelChangeEntry,
     deserialize_message,
@@ -45,17 +43,48 @@ def _safe_session_dir_name(cwd: Path) -> str:
     return f"--{raw.replace('/', '-').replace('\\', '-').replace(':', '-')}--"
 
 
+FileEntry = SessionHeader | SessionEntry
+
+
 class SessionManager:
     """树状、追加式的会话存储管理器。"""
 
     def __init__(self, sessions_dir: Path) -> None:
-        """初始化会话存储目录，并确保目录存在。"""
+        """初始化会话存储目录，并准备当前会话的内存状态。"""
 
-        self.sessions_dir = sessions_dir
+        self.sessions_dir = sessions_dir  # 会话根目录。
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        self.session_file: Path | None = None  # 当前打开的会话文件路径。
+        self.session_id: str = ""  # 当前打开的会话 ID。
+        self.cwd: Path | None = None  # 当前会话工作目录。
+        self.file_entries: list[FileEntry] = []  # 当前会话的完整条目列表（包含 header）。
+        self.by_id: dict[str, SessionEntry] = {}  # 条目 ID 到条目对象的索引。
+        self.labels_by_id: dict[str, str] = {}  # 已解析的条目标签索引。
+        self.leaf_id: str | None = None  # 当前活动分支的叶子节点 ID。
+        self.flushed: bool = True  # 当前内存状态是否已全部落盘。
 
-    def create_session(self, *, cwd: Path, model_id: str, title: str | None = None, parent_session: str | None = None) -> SessionSnapshot:
-        """创建一个新的空会话文件并返回对应快照。"""
+    @property
+    def branch_id(self) -> str:
+        """兼容旧字段名，实际值等价于当前 leaf ID。"""
+
+        return self.leaf_id or "main"
+
+    @property
+    def model_id(self) -> str:
+        """返回当前会话头里记录的模型 ID。"""
+
+        header = self.get_header()
+        return header.model_id if header is not None else ""
+
+    @property
+    def title(self) -> str:
+        """返回当前会话标题。"""
+
+        header = self.get_header()
+        return header.title if header is not None else ""
+
+    def create_session(self, *, cwd: Path, model_id: str, title: str | None = None, parent_session: str | None = None) -> SessionManager:
+        """创建一个新的空会话文件，并将当前 manager 切换到该会话。"""
 
         session_id = uuid.uuid4().hex[:12]
         session_dir = self._session_dir_for_cwd(cwd)
@@ -71,53 +100,69 @@ class SessionManager:
             model_id=model_id,
         )
         session_file.write_text(json.dumps(self._header_to_record(header), ensure_ascii=False) + "\n", encoding="utf-8")
-        return SessionSnapshot(
-            session_id=session_id,
-            session_file=session_file,
-            cwd=cwd.resolve(),
-            model_id=model_id,
-            leaf_id=None,
-            entries=[],
-            header=header,
-            title=header.title,
-        )
+        self.session_file = session_file.resolve()
+        self.session_id = header.id
+        self.cwd = Path(header.cwd).resolve()
+        self.file_entries = [header]
+        self.by_id = {}
+        self.labels_by_id = {}
+        self.leaf_id = None
+        self.flushed = True
+        return self
 
-    def continue_recent(self, cwd: Path) -> SessionSnapshot:
+    def continue_recent(self, cwd: Path) -> SessionManager:
         """继续当前目录最近一次会话；若不存在则新建。"""
 
         recent = self.list_recent_sessions(limit=1, cwd=cwd)
         if recent:
-            return self.load_session(recent[0]["session_file"])
+            return self.open(recent[0]["session_file"])
         return self.create_session(cwd=cwd, model_id="")
 
-    def open(self, session_file: str | Path) -> SessionSnapshot:
+    def open(self, session_file: str | Path) -> SessionManager:
         """按文件路径或引用打开一个已有会话。"""
 
-        return self.load_session(session_file)
+        self.set_session_file(session_file)
+        return self
 
-    def load_session(self, session_ref: str | Path) -> SessionSnapshot:
-        """加载会话文件，解析头信息、条目和当前叶子节点。"""
+    def load_session(self, session_ref: str | Path) -> SessionManager:
+        """兼容旧调用方，内部直接切换到指定会话并返回当前 manager。"""
 
-        session_file = self.resolve_session_file(session_ref)
-        if session_file is None:
+        return self.open(session_ref)
+
+    def set_session_file(self, session_ref: str | Path) -> None:
+        """切换到指定会话文件，并重建当前会话的内存索引。"""
+
+        resolved = self.resolve_session_file(session_ref)
+        if resolved is None:
             raise FileNotFoundError(f"Unknown session reference: {session_ref}")
+        self.session_file = resolved
+        self.file_entries = self.load_entries_from_file(resolved)
+        if not self.file_entries:
+            raise ValueError(f"Invalid session file: {resolved}")
+        self._build_index()
+        self.flushed = True
 
-        records = self._load_records(session_file)
-        if not records:
-            raise ValueError(f"Invalid session file: {session_file}")
-        header = self._record_to_header(records[0])
-        entries: list[SessionEntry] = [self._record_to_entry(item) for item in records[1:]]
-        leaf_id = entries[-1].id if entries else None
-        return SessionSnapshot(
-            session_id=header.id,
-            session_file=session_file,
-            cwd=Path(header.cwd).resolve(),
-            model_id=header.model_id,
-            leaf_id=leaf_id,
-            entries=entries,
-            header=header,
-            title=header.title,
-        )
+    def load_entries_from_file(self, file_path: str | Path) -> list[FileEntry]:
+        """读取并校验 JSONL 会话文件，恢复为内存条目列表。"""
+
+        path = Path(file_path)
+        if not path.exists():
+            return []
+        entries: list[FileEntry] = []
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            if not raw_line.strip():
+                continue
+            try:
+                record = json.loads(raw_line)
+            except json.JSONDecodeError:
+                continue
+            if not entries:
+                if record.get("type") != "session" or not isinstance(record.get("id"), str):
+                    return []
+                entries.append(self._record_to_header(record))
+                continue
+            entries.append(self._record_to_entry(record))
+        return entries
 
     def resolve_session_file(self, session_ref: str | Path | None) -> Path | None:
         """将会话引用解析成真实的 session 文件路径。"""
@@ -132,16 +177,12 @@ class SessionManager:
         candidate = self._find_session_file_by_id(str(session_ref))
         if candidate is not None:
             return candidate
-        legacy_dir = self.sessions_dir / str(session_ref)
-        if legacy_dir.is_dir():
-            return self._migrate_legacy_session(legacy_dir)
         return None
 
     def list_recent_sessions(self, *, limit: int = 10, cwd: Path | None = None) -> list[dict[str, Any]]:
         """列出最近更新的会话摘要信息。"""
 
         items: list[dict[str, Any]] = []
-        self._migrate_all_legacy_sessions()
         for session_file in self._iter_session_files(cwd=cwd):
             info = self._build_session_info(session_file)
             if info is None:
@@ -162,64 +203,63 @@ class SessionManager:
         items.sort(key=lambda item: item.get("updated_at", ""), reverse=True)
         return items[:limit]
 
-    def append_message(self, session_ref: str | Path, *, message: ConversationMessage, parent_id: str | None = None) -> SessionMessageEntry:
-        """向会话树追加一条普通消息节点。"""
+    def append_message(self, message: ConversationMessage, parent_id: str | None = None) -> SessionMessageEntry:
+        """向当前会话树追加一条普通消息节点。"""
 
-        snapshot = self.load_session(session_ref)
+        self._require_open_session()
         entry = SessionMessageEntry(
-            id=self._generate_entry_id(snapshot.entries),
-            parent_id=parent_id if parent_id is not None else snapshot.leaf_id,
+            id=self._generate_entry_id(),
+            parent_id=parent_id if parent_id is not None else self.leaf_id,
             timestamp=_iso_now(),
             message=message,
         )
-        self._append_record(snapshot.session_file, self._entry_to_record(entry))
+        self._append_entry(entry)
         if isinstance(message, UserMessage):
-            self._update_header(snapshot.session_file, title=str(message.content).strip().replace("\n", " ")[:80] or snapshot.title)
+            self._update_header(title=str(message.content).strip().replace("\n", " ")[:80] or self.title)
         return entry
 
-    def append_thinking_level_change(self, session_ref: str | Path, thinking_level: str) -> ThinkingLevelChangeEntry:
+    def append_thinking_level_change(self, thinking_level: str) -> ThinkingLevelChangeEntry:
         """记录一次 thinking 级别变更。"""
 
-        snapshot = self.load_session(session_ref)
+        self._require_open_session()
         entry = ThinkingLevelChangeEntry(
-            id=self._generate_entry_id(snapshot.entries),
-            parent_id=snapshot.leaf_id,
+            id=self._generate_entry_id(),
+            parent_id=self.leaf_id,
             timestamp=_iso_now(),
             thinking_level=thinking_level,
         )
-        self._append_record(snapshot.session_file, self._entry_to_record(entry))
+        self._append_entry(entry)
         return entry
 
-    def append_model_change(self, session_ref: str | Path, provider: str, model_id: str) -> ModelChangeEntry:
+    def append_model_change(self, provider: str, model_id: str) -> ModelChangeEntry:
         """记录一次模型切换，并同步更新会话头信息。"""
 
-        snapshot = self.load_session(session_ref)
+        self._require_open_session()
         entry = ModelChangeEntry(
-            id=self._generate_entry_id(snapshot.entries),
-            parent_id=snapshot.leaf_id,
+            id=self._generate_entry_id(),
+            parent_id=self.leaf_id,
             timestamp=_iso_now(),
             provider=provider,
             model_id=model_id,
         )
-        self._append_record(snapshot.session_file, self._entry_to_record(entry))
-        self._update_header(snapshot.session_file, model_id=model_id)
+        self._append_entry(entry)
+        self._update_header(model_id=model_id)
         return entry
 
     def append_compaction(
         self,
-        session_ref: str | Path,
         summary: str,
         first_kept_entry_id: str,
         tokens_before: int,
         details: dict[str, Any] | None = None,
         from_hook: bool = False,
     ) -> CompactionEntry:
-        """向会话追加一条压缩摘要记录。"""
+        """向当前会话追加一条压缩摘要记录。"""
 
-        snapshot = self.load_session(session_ref)
+        self._require_open_session()
         entry = CompactionEntry(
-            id=self._generate_entry_id(snapshot.entries),
-            parent_id=snapshot.leaf_id,
+            id=self._generate_entry_id(),
+            parent_id=self.leaf_id,
             timestamp=_iso_now(),
             summary=summary,
             first_kept_entry_id=first_kept_entry_id,
@@ -227,171 +267,164 @@ class SessionManager:
             details=details,
             from_hook=from_hook,
         )
-        self._append_record(snapshot.session_file, self._entry_to_record(entry))
+        self._append_entry(entry)
         return entry
 
     def append_branch_summary(
         self,
-        session_ref: str | Path,
         from_id: str,
         summary: str,
         details: dict[str, Any] | None = None,
         from_hook: bool = False,
     ) -> BranchSummaryEntry:
-        """向会话追加一条分支摘要记录。"""
+        """向当前会话追加一条分支摘要记录。"""
 
-        snapshot = self.load_session(session_ref)
+        self._require_open_session()
         entry = BranchSummaryEntry(
-            id=self._generate_entry_id(snapshot.entries),
-            parent_id=snapshot.leaf_id,
+            id=self._generate_entry_id(),
+            parent_id=self.leaf_id,
             timestamp=_iso_now(),
             from_id=from_id,
             summary=summary,
             details=details,
             from_hook=from_hook,
         )
-        self._append_record(snapshot.session_file, self._entry_to_record(entry))
+        self._append_entry(entry)
         return entry
 
-    def append_custom_entry(self, session_ref: str | Path, custom_type: str, data: Any | None = None) -> CustomEntry:
+    def append_custom_entry(self, custom_type: str, data: Any | None = None) -> CustomEntry:
         """追加一条不参与上下文恢复的自定义记录。"""
 
-        snapshot = self.load_session(session_ref)
+        self._require_open_session()
         entry = CustomEntry(
-            id=self._generate_entry_id(snapshot.entries),
-            parent_id=snapshot.leaf_id,
+            id=self._generate_entry_id(),
+            parent_id=self.leaf_id,
             timestamp=_iso_now(),
             custom_type=custom_type,
             data=data,
         )
-        self._append_record(snapshot.session_file, self._entry_to_record(entry))
+        self._append_entry(entry)
         return entry
 
     def append_custom_message_entry(
         self,
-        session_ref: str | Path,
         custom_type: str,
         content: str | list[dict[str, Any]],
         display: bool,
         details: dict[str, Any] | None = None,
     ) -> CustomMessageEntry:
-        """追加一条会被转成消息上下文的自定义记录。"""
+        """追加一条会被解释进模型上下文的自定义消息记录。"""
 
-        snapshot = self.load_session(session_ref)
+        self._require_open_session()
         entry = CustomMessageEntry(
-            id=self._generate_entry_id(snapshot.entries),
-            parent_id=snapshot.leaf_id,
+            id=self._generate_entry_id(),
+            parent_id=self.leaf_id,
             timestamp=_iso_now(),
             custom_type=custom_type,
             content=content,
             details=details,
             display=display,
         )
-        self._append_record(snapshot.session_file, self._entry_to_record(entry))
+        self._append_entry(entry)
         return entry
 
-    def append_label_change(self, session_ref: str | Path, target_id: str, label: str | None) -> LabelEntry:
+    def append_label_change(self, target_id: str, label: str | None) -> LabelEntry:
         """为指定节点追加标签或清除标签。"""
 
-        snapshot = self.load_session(session_ref)
+        self._require_open_session()
         entry = LabelEntry(
-            id=self._generate_entry_id(snapshot.entries),
-            parent_id=snapshot.leaf_id,
+            id=self._generate_entry_id(),
+            parent_id=self.leaf_id,
             timestamp=_iso_now(),
             target_id=target_id,
             label=label,
         )
-        self._append_record(snapshot.session_file, self._entry_to_record(entry))
+        self._append_entry(entry)
         return entry
 
-    def append_session_info(self, session_ref: str | Path, name: str | None) -> SessionInfoEntry:
+    def append_session_info(self, name: str | None) -> SessionInfoEntry:
         """记录会话展示名称等附加信息。"""
 
-        snapshot = self.load_session(session_ref)
+        self._require_open_session()
         entry = SessionInfoEntry(
-            id=self._generate_entry_id(snapshot.entries),
-            parent_id=snapshot.leaf_id,
+            id=self._generate_entry_id(),
+            parent_id=self.leaf_id,
             timestamp=_iso_now(),
             name=name,
         )
-        self._append_record(snapshot.session_file, self._entry_to_record(entry))
+        self._append_entry(entry)
         if name:
-            self._update_header(snapshot.session_file, title=name)
+            self._update_header(title=name)
         return entry
 
-    def get_entries(self, session_ref: str | Path) -> list[SessionEntry]:
-        """返回会话中的全部条目。"""
+    def get_entries(self) -> list[SessionEntry]:
+        """返回当前会话中的全部条目。"""
 
-        return self.load_session(session_ref).entries
+        return [entry for entry in self.file_entries[1:] if isinstance(entry, self._session_entry_types())]
 
-    def get_leaf_id(self, session_ref: str | Path) -> str | None:
+    def get_leaf_id(self) -> str | None:
         """返回当前会话叶子节点 ID。"""
 
-        return self.load_session(session_ref).leaf_id
+        return self.leaf_id
 
-    def get_entry(self, session_ref: str | Path, entry_id: str) -> SessionEntry | None:
-        """按条目 ID 查找会话中的单个节点。"""
+    def get_entry(self, entry_id: str) -> SessionEntry | None:
+        """按条目 ID 查找当前会话中的单个节点。"""
 
-        for entry in self.load_session(session_ref).entries:
-            if entry.id == entry_id:
-                return entry
-        return None
+        return self.by_id.get(entry_id)
 
-    def get_branch(self, session_ref: str | Path, from_id: str | None = None) -> list[SessionEntry]:
+    def get_branch(self, from_id: str | None = None) -> list[SessionEntry]:
         """从指定叶子回溯出一条完整分支路径。"""
 
-        snapshot = self.load_session(session_ref)
-        by_id = {entry.id: entry for entry in snapshot.entries}
+        current = self.by_id.get(from_id or self.leaf_id or "")
         path: list[SessionEntry] = []
-        current = by_id.get(from_id or snapshot.leaf_id or "")
         while current is not None:
             path.insert(0, current)
-            current = by_id.get(current.parent_id or "")
+            current = self.by_id.get(current.parent_id or "")
         return path
 
-    def get_tree(self, session_ref: str | Path) -> list[SessionTreeNode]:
-        """将会话条目重建为树结构节点列表。"""
+    def get_tree(self) -> list[SessionTreeNode]:
+        """将当前会话条目重建为树结构节点列表。"""
 
-        snapshot = self.load_session(session_ref)
-        labels: dict[str, str] = {}
-        for entry in snapshot.entries:
-            if isinstance(entry, LabelEntry):
-                if entry.label:
-                    labels[entry.target_id] = entry.label
-                else:
-                    labels.pop(entry.target_id, None)
-        nodes = {entry.id: SessionTreeNode(entry=entry, label=labels.get(entry.id)) for entry in snapshot.entries}
+        entries = self.get_entries()
+        node_map = {entry.id: SessionTreeNode(entry=entry, label=self.labels_by_id.get(entry.id)) for entry in entries}
         roots: list[SessionTreeNode] = []
-        for entry in snapshot.entries:
-            node = nodes[entry.id]
-            if entry.parent_id and entry.parent_id in nodes:
-                nodes[entry.parent_id].children.append(node)
-            else:
+        for entry in entries:
+            node = node_map[entry.id]
+            if entry.parent_id is None or entry.parent_id not in node_map:
                 roots.append(node)
+                continue
+            node_map[entry.parent_id].children.append(node)
+        for node in node_map.values():
+            node.children.sort(key=lambda item: item.entry.timestamp)
+        roots.sort(key=lambda item: item.entry.timestamp)
         return roots
 
-    def branch(self, session_ref: str | Path, branch_from_id: str) -> SessionSnapshot:
-        """将会话视角切换到指定节点对应的分支。"""
+    def branch(self, branch_from_id: str) -> None:
+        """将当前会话视角切换到指定节点对应的分支。"""
 
-        snapshot = self.load_session(session_ref)
-        if not any(entry.id == branch_from_id for entry in snapshot.entries):
+        if branch_from_id not in self.by_id:
             raise ValueError(f"Entry {branch_from_id} not found")
-        snapshot.leaf_id = branch_from_id
-        return snapshot
+        self.leaf_id = branch_from_id
+
+    def reset_leaf(self) -> None:
+        """将当前分支指针重置到根之前的位置。"""
+
+        self.leaf_id = None
 
     def branch_with_summary(
         self,
-        session_ref: str | Path,
         branch_from_id: str | None,
         summary: str,
         details: dict[str, Any] | None = None,
         from_hook: bool = False,
     ) -> BranchSummaryEntry:
-        """在指定分支点上追加一条摘要化的分支说明。"""
+        """切换到指定分支点，并追加一条摘要化的分支说明。"""
 
-        snapshot = self.load_session(session_ref)
+        if branch_from_id is not None and branch_from_id not in self.by_id:
+            raise ValueError(f"Entry {branch_from_id} not found")
+        self.leaf_id = branch_from_id
         entry = BranchSummaryEntry(
-            id=self._generate_entry_id(snapshot.entries),
+            id=self._generate_entry_id(),
             parent_id=branch_from_id,
             timestamp=_iso_now(),
             from_id=branch_from_id or "root",
@@ -399,28 +432,37 @@ class SessionManager:
             details=details,
             from_hook=from_hook,
         )
-        self._append_record(snapshot.session_file, self._entry_to_record(entry))
+        self._append_entry(entry)
         return entry
 
-    def create_branched_session(self, session_ref: str | Path, leaf_id: str) -> Path:
-        """基于某个叶子节点复制出一份新的分支会话文件。"""
+    def create_branched_session(self, leaf_id: str) -> Path:
+        """基于某个叶子节点复制出一份只包含单一路径的新会话文件。"""
 
-        snapshot = self.load_session(session_ref)
-        path_entries = self.get_branch(snapshot.session_file, leaf_id)
+        self._require_open_session()
+        path_entries = self.get_branch(leaf_id)
         if not path_entries:
             raise ValueError(f"Entry {leaf_id} not found")
-        branched = self.create_session(cwd=snapshot.cwd, model_id=snapshot.model_id, title=snapshot.title, parent_session=str(snapshot.session_file))
-        content = [json.dumps(self._header_to_record(branched.header), ensure_ascii=False)]
+        parent_session = str(self.session_file) if self.session_file is not None else None
+        branch_manager = SessionManager(self.sessions_dir).create_session(
+            cwd=self.cwd or Path.cwd(),
+            model_id=self.model_id,
+            title=self.title,
+            parent_session=parent_session,
+        )
+        content = [json.dumps(branch_manager._header_to_record(branch_manager.get_header()), ensure_ascii=False)]
         for entry in path_entries:
             content.append(json.dumps(self._entry_to_record(entry), ensure_ascii=False))
-        branched.session_file.write_text("\n".join(content) + "\n", encoding="utf-8")
-        return branched.session_file
+        if branch_manager.session_file is None:
+            raise RuntimeError("Branched session file was not created")
+        branch_manager.session_file.write_text("\n".join(content) + "\n", encoding="utf-8")
+        return branch_manager.session_file
 
-    def build_session_context(self, session_ref: str | Path, leaf_id: str | None = None) -> SessionConversationContext:
-        """将会话分支恢复为可直接送给模型的上下文对象。"""
+    def build_session_context(self, leaf_id: str | None = None) -> SessionConversationContext:
+        """将当前会话分支恢复为可直接送给模型的上下文对象。"""
 
-        snapshot = self.load_session(session_ref)
-        path = self.get_branch(snapshot.session_file, leaf_id)
+        path = self.get_branch(leaf_id)
+        if leaf_id is None and self.leaf_id is None:
+            path = []
         messages: list[ConversationMessage] = []
         thinking_level = "off"
         model: dict[str, str] | None = None
@@ -432,7 +474,10 @@ class SessionManager:
             elif isinstance(entry, ModelChangeEntry):
                 model = {"provider": entry.provider, "model_id": entry.model_id}
             elif isinstance(entry, SessionMessageEntry) and isinstance(entry.message, AssistantMessage):
-                model = {"provider": entry.message.metadata.get("provider", ""), "model_id": entry.message.metadata.get("model", "")}
+                model = {
+                    "provider": entry.message.metadata.get("provider", ""),
+                    "model_id": entry.message.metadata.get("model", ""),
+                }
             elif isinstance(entry, CompactionEntry):
                 compaction = entry
 
@@ -440,9 +485,15 @@ class SessionManager:
             if isinstance(entry, SessionMessageEntry):
                 messages.append(entry.message)
             elif isinstance(entry, BranchSummaryEntry) and entry.summary:
-                messages.append(UserMessage(content=f"[Branch Summary]\n{entry.summary}", metadata={"branch_summary": True, "from_id": entry.from_id}))
+                messages.append(
+                    UserMessage(
+                        content=f"[Branch Summary]\n{entry.summary}",
+                        metadata={"branch_summary": True, "from_id": entry.from_id},
+                    )
+                )
             elif isinstance(entry, CustomMessageEntry):
-                messages.append(UserMessage(content=str(entry.content), metadata={"custom_message": entry.custom_type, "display": entry.display, **(entry.details or {})}))
+                payload = {"custom_message": entry.custom_type, "display": entry.display, **(entry.details or {})}
+                messages.append(UserMessage(content=str(entry.content), metadata=payload))
 
         if compaction is not None:
             messages.append(UserMessage(content=f"[Session Summary]\n{compaction.summary}", metadata={"summary": True}))
@@ -462,63 +513,102 @@ class SessionManager:
 
         return SessionConversationContext(messages=messages, thinking_level=thinking_level, model=model)
 
-    def build_context_messages(self, session_ref: str | Path, branch_id: str | None = None) -> list[ConversationMessage]:
-        """仅提取会话上下文中的消息列表。"""
+    def build_context_messages(self, leaf_id: str | None = None) -> list[ConversationMessage]:
+        """仅提取当前会话上下文中的消息列表。"""
 
-        return self.build_session_context(session_ref, branch_id).messages
+        return self.build_session_context(leaf_id).messages
 
-    def iter_events(self, session_ref: str | Path) -> list[dict[str, Any]]:
-        """按原始 JSON 行读取会话文件中的事件记录。"""
+    def iter_events(self, session_ref: str | Path | None = None) -> list[dict[str, Any]]:
+        """按原始 JSON 行读取会话文件中的事件记录，仅用于调试查看。"""
 
-        session_file = self.resolve_session_file(session_ref)
+        session_file = self.resolve_session_file(session_ref) if session_ref is not None else self.session_file
         if session_file is None or not session_file.exists():
             return []
         return [json.loads(line) for line in session_file.read_text(encoding="utf-8").splitlines() if line.strip()]
 
-    def get_header(self, session_ref: str | Path) -> SessionHeader | None:
-        """返回会话头信息。"""
+    def get_header(self) -> SessionHeader | None:
+        """返回当前会话头信息。"""
 
-        snapshot = self.load_session(session_ref)
-        return snapshot.header
+        if not self.file_entries or not isinstance(self.file_entries[0], SessionHeader):
+            return None
+        return self.file_entries[0]
 
-    def _load_records(self, session_file: Path) -> list[dict[str, Any]]:
-        """读取并解析 session 文件中的全部 JSON 行。"""
+    def _build_index(self) -> None:
+        """根据当前 file_entries 重建条目索引、标签索引与 leaf 指针。"""
 
-        if not session_file.exists():
-            return []
-        items: list[dict[str, Any]] = []
-        for line in session_file.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            try:
-                items.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-        return items
+        header = self.get_header()
+        if header is None:
+            raise ValueError("Session file missing header")
+        self.session_id = header.id
+        self.cwd = Path(header.cwd).resolve()
+        self.by_id = {}
+        self.labels_by_id = {}
+        self.leaf_id = None
+        for entry in self.get_entries():
+            self.by_id[entry.id] = entry
+            self.leaf_id = entry.id
+            if isinstance(entry, LabelEntry):
+                if entry.label:
+                    self.labels_by_id[entry.target_id] = entry.label
+                else:
+                    self.labels_by_id.pop(entry.target_id, None)
 
-    def _append_record(self, session_file: Path, record: dict[str, Any]) -> None:
-        """以追加方式将单条记录写入 session 文件。"""
+    def _append_entry(self, entry: SessionEntry) -> None:
+        """将条目追加到文件和内存索引中，并推进当前 leaf。"""
 
-        with session_file.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        self._require_open_session()
+        if self.session_file is None:
+            raise RuntimeError("No active session file")
+        self.file_entries.append(entry)
+        self.by_id[entry.id] = entry
+        if isinstance(entry, LabelEntry):
+            if entry.label:
+                self.labels_by_id[entry.target_id] = entry.label
+            else:
+                self.labels_by_id.pop(entry.target_id, None)
+        with self.session_file.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(self._entry_to_record(entry), ensure_ascii=False) + "\n")
+        self.leaf_id = entry.id
+        self.flushed = True
 
-    def _update_header(self, session_file: Path, *, title: str | None = None, model_id: str | None = None) -> None:
+    def _update_header(self, *, title: str | None = None, model_id: str | None = None) -> None:
         """重写首行头信息，用于同步标题或模型 ID。"""
 
-        records = self._load_records(session_file)
-        if not records:
+        self._require_open_session()
+        header = self.get_header()
+        if header is None or self.session_file is None:
             return
-        header = records[0]
         if title is not None and title:
-            header["title"] = title
+            header.title = title
         if model_id is not None:
-            header["model_id"] = model_id
-        records[0] = header
-        session_file.write_text("\n".join(json.dumps(item, ensure_ascii=False) for item in records) + "\n", encoding="utf-8")
+            header.model_id = model_id
+        self._rewrite_file()
 
-    def _header_to_record(self, header: SessionHeader) -> dict[str, Any]:
+    def _rewrite_file(self) -> None:
+        """将当前内存里的完整会话状态整份重写回 session 文件。"""
+
+        if self.session_file is None:
+            raise RuntimeError("No active session file")
+        lines: list[str] = []
+        for entry in self.file_entries:
+            if isinstance(entry, SessionHeader):
+                lines.append(json.dumps(self._header_to_record(entry), ensure_ascii=False))
+            else:
+                lines.append(json.dumps(self._entry_to_record(entry), ensure_ascii=False))
+        self.session_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self.flushed = True
+
+    def _require_open_session(self) -> None:
+        """确保当前 manager 已绑定到一个有效会话。"""
+
+        if self.session_file is None or self.get_header() is None:
+            raise RuntimeError("No active session")
+
+    def _header_to_record(self, header: SessionHeader | None) -> dict[str, Any]:
         """将会话头对象转换为可持久化字典。"""
 
+        if header is None:
+            raise ValueError("Session header is required")
         return {
             "type": "session",
             "version": header.version,
@@ -628,7 +718,7 @@ class SessionManager:
             return SessionInfoEntry(name=record.get("name"), **base)
         raise ValueError(f"Unsupported session entry type: {entry_type}")
 
-    def _iter_session_files(self, *, cwd: Path | None = None):
+    def _iter_session_files(self, *, cwd: Path | None = None) -> list[Path]:
         """遍历指定目录或全部工作区下的 session 文件。"""
 
         if cwd is not None:
@@ -644,8 +734,9 @@ class SessionManager:
         for item in self.sessions_dir.glob("**/*.jsonl"):
             if item.stem.endswith(f"_{session_id}") or item.stem == session_id:
                 return item.resolve()
-            records = self._load_records(item)
-            if records and str(records[0].get("id", "")) == session_id:
+            entries = self.load_entries_from_file(item)
+            header = entries[0] if entries else None
+            if isinstance(header, SessionHeader) and header.id == session_id:
                 return item.resolve()
         return None
 
@@ -654,32 +745,38 @@ class SessionManager:
 
         return self.sessions_dir / _safe_session_dir_name(cwd)
 
-    def _generate_entry_id(self, entries: list[SessionEntry]) -> str:
+    def _generate_entry_id(self) -> str:
         """生成一个在当前会话中唯一的条目 ID。"""
 
-        existing = {entry.id for entry in entries}
         while True:
             candidate = uuid.uuid4().hex[:8]
-            if candidate not in existing:
+            if candidate not in self.by_id:
                 return candidate
 
     def _build_session_info(self, session_file: Path) -> SessionInfo | None:
         """从 session 文件提炼出用于列表展示的摘要信息。"""
 
-        records = self._load_records(session_file)
-        if not records or records[0].get("type") != "session":
+        entries = self.load_entries_from_file(session_file)
+        if not entries or not isinstance(entries[0], SessionHeader):
             return None
-        header = self._record_to_header(records[0])
-        entries = [self._record_to_entry(item) for item in records[1:]]
-        message_entries = [entry for entry in entries if isinstance(entry, SessionMessageEntry)]
-        texts = [str(entry.message.content) for entry in message_entries if getattr(entry.message, "role", "") in {"user", "assistant"}]
-        first_message = next((str(entry.message.content) for entry in message_entries if getattr(entry.message, "role", "") == "user"), "(no messages)")
+        header = entries[0]
+        session_entries = [entry for entry in entries[1:] if isinstance(entry, self._session_entry_types())]
+        message_entries = [entry for entry in session_entries if isinstance(entry, SessionMessageEntry)]
+        texts = [
+            str(entry.message.content)
+            for entry in message_entries
+            if getattr(entry.message, "role", "") in {"user", "assistant"}
+        ]
+        first_message = next(
+            (str(entry.message.content) for entry in message_entries if getattr(entry.message, "role", "") == "user"),
+            "(no messages)",
+        )
         name = None
-        for entry in reversed(entries):
+        for entry in reversed(session_entries):
             if isinstance(entry, SessionInfoEntry):
                 name = entry.name or None
                 break
-        modified = entries[-1].timestamp if entries else header.timestamp
+        modified = session_entries[-1].timestamp if session_entries else header.timestamp
         return SessionInfo(
             path=str(session_file),
             id=header.id,
@@ -691,85 +788,23 @@ class SessionManager:
             message_count=len(message_entries),
             first_message=first_message,
             all_messages_text=" ".join(texts),
-            leaf_id=entries[-1].id if entries else None,
+            leaf_id=session_entries[-1].id if session_entries else None,
             title=header.title,
             model_id=header.model_id,
         )
 
-    def _migrate_all_legacy_sessions(self) -> None:
-        """扫描并迁移旧版 meta/events 双文件格式会话。"""
+    @staticmethod
+    def _session_entry_types() -> tuple[type[Any], ...]:
+        """返回所有合法会话条目类型，用于 isinstance 过滤。"""
 
-        for child in self.sessions_dir.iterdir():
-            if child.is_dir() and (child / "events.jsonl").exists() and (child / "meta.json").exists():
-                self._migrate_legacy_session(child)
-
-    def _migrate_legacy_session(self, legacy_dir: Path) -> Path:
-        """将旧版会话目录迁移为新的单文件 JSONL 格式。"""
-
-        meta_file = legacy_dir / "meta.json"
-        events_file = legacy_dir / "events.jsonl"
-        if not meta_file.exists() or not events_file.exists():
-            raise FileNotFoundError(f"Legacy session missing meta/events: {legacy_dir}")
-        meta = json.loads(meta_file.read_text(encoding="utf-8"))
-        cwd = Path(str(meta.get("cwd", self.sessions_dir))).resolve()
-        session_dir = self._session_dir_for_cwd(cwd)
-        session_dir.mkdir(parents=True, exist_ok=True)
-        session_file = session_dir / f"migrated_{legacy_dir.name}.jsonl"
-        if session_file.exists():
-            return session_file
-
-        header = SessionHeader(
-            version=CURRENT_SESSION_VERSION,
-            id=str(meta.get("session_id", legacy_dir.name)),
-            timestamp=str(meta.get("created_at", _iso_now())),
-            cwd=str(cwd),
-            parent_session=None,
-            title=str(meta.get("title", legacy_dir.name)),
-            model_id=str(meta.get("model_id", meta.get("model", ""))),
+        return (
+            SessionMessageEntry,
+            ThinkingLevelChangeEntry,
+            ModelChangeEntry,
+            CompactionEntry,
+            BranchSummaryEntry,
+            CustomEntry,
+            CustomMessageEntry,
+            LabelEntry,
+            SessionInfoEntry,
         )
-        records = [self._header_to_record(header)]
-        last_entry_id: str | None = None
-        first_kept_entry_id: str | None = None
-        for raw_line in events_file.read_text(encoding="utf-8").splitlines():
-            if not raw_line.strip():
-                continue
-            event = json.loads(raw_line)
-            if event.get("type") == "message":
-                payload = dict(event.get("payload", {}))
-                message = deserialize_message(
-                    {
-                        "role": payload.get("role", "user"),
-                        "content": payload.get("content", ""),
-                        "metadata": payload.get("metadata", {}),
-                        "thinking": payload.get("thinking", ""),
-                        "tool_calls": payload.get("tool_calls", []),
-                        "tool_call_id": payload.get("tool_call_id", ""),
-                        "tool_name": payload.get("tool_name", ""),
-                    }
-                )
-                entry = SessionMessageEntry(
-                    id=str(payload.get("id", uuid.uuid4().hex[:8])),
-                    parent_id=last_entry_id,
-                    timestamp=_iso_now(),
-                    message=message,
-                )
-                records.append(self._entry_to_record(entry))
-                last_entry_id = entry.id
-                if first_kept_entry_id is None:
-                    first_kept_entry_id = entry.id
-            elif event.get("type") == "summary":
-                payload = dict(event.get("payload", {}))
-                entry = CompactionEntry(
-                    id=uuid.uuid4().hex[:8],
-                    parent_id=last_entry_id,
-                    timestamp=_iso_now(),
-                    summary=str(payload.get("summary", "")),
-                    first_kept_entry_id=first_kept_entry_id or "",
-                    tokens_before=0,
-                    details={"migrated_node_ids": payload.get("node_ids", [])},
-                    from_hook=False,
-                )
-                records.append(self._entry_to_record(entry))
-                last_entry_id = entry.id
-        session_file.write_text("\n".join(json.dumps(item, ensure_ascii=False) for item in records) + "\n", encoding="utf-8")
-        return session_file

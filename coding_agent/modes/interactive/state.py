@@ -65,12 +65,12 @@ class InteractiveState:
     """保存交互界面的全部可见状态。"""
 
     session_id: str  # 当前会话 ID。
-    session_file: str  # 当前会话文件。
-    leaf_id: str  # 当前叶子节点。
     model_id: str  # 当前模型 ID。
     thinking: str | None  # 当前思考等级。
     cwd: Path  # 当前工作目录。
     theme: str  # 当前主题名。
+    session_file: str = ""  # 当前会话文件。
+    leaf_id: str = ""  # 当前叶子节点。
     theme_styles: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_THEME_DATA))  # 当前主题样式映射。
     submit_on_enter: bool = True  # 回车是否直接提交。
     is_running: bool = False  # 当前是否正在运行请求。

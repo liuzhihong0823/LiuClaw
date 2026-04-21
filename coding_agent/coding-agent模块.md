@@ -357,38 +357,39 @@ if __name__ == "__main__":
 
 ## 会话持久化：`SessionManager`
 
-`core/session_manager.py` 采用文件系统 + JSONL 事件流的方式管理会话。
+`core/session_manager.py` 采用追加式 JSONL + 内存索引树的方式管理会话。
 
 ### 1. 目录结构
 
-每个 session 有独立目录，至少包含：
-
-- `meta.json`
-- `events.jsonl`
+每个 session 对应一个 `.jsonl` 文件，首行是 session header，后续每行都是树状 entry。
 
 ### 2. 事件类型
 
 当前持久化支持：
 
 - `message`
-- `control`
-- `summary`
-- `branch_switch`
+- `thinking_level_change`
+- `model_change`
+- `compaction`
+- `branch_summary`
+- `custom`
+- `custom_message`
+- `label`
+- `session_info`
 
 ### 3. 存储与恢复逻辑
 
-- `create_session()`：创建新会话与 meta。
+- `create_session()`：创建新会话文件并切到该会话。
 - `append_message()`：写入普通消息节点。
-- `append_control()`：写入 steering / follow-up 控制事件。
-- `append_summary()`：写入摘要事件。
-- `load_session()`：回放全部事件恢复 `SessionSnapshot`。
+- `set_session_file()`：加载整个 session file，重建 `by_id`、`labels_by_id`、`leaf_id` 等内存索引。
+- `build_session_context()`：从当前 `leaf_id` 沿 `parent_id` 回溯 active path，再解释成真正发给模型的上下文消息。
 - `build_context_messages()`：
-  - 取当前分支的消息
-  - 若存在摘要，则先插入一条标记了 `summary=True` 的 `UserMessage`
+  - 默认读取当前 leaf 对应分支
+  - 若存在 `compaction`，先插入一条标记了 `summary=True` 的 `UserMessage`
   - 跳过已经被摘要覆盖的旧节点
-  - 过滤 control 事件
+  - 继续解释 `branch_summary` / `custom_message`
 
-这套设计的重点是：模型上下文与会话审计事件不是一回事。控制事件会被持久化，但默认不混入普通上下文回放。
+这套设计的重点是：session file 是持久化来源，`SessionManager` 是当前会话状态；恢复时不是“回放成快照”，而是“加载 entries + 建索引 + 按 leaf 还原上下文”。
 
 ## 工具体系
 
@@ -605,12 +606,9 @@ if __name__ == "__main__":
 - `ToolPolicy`
 - `ResourceBundle`
 - `ExtensionRuntime`
-- `ControlMessage`
 - `ToolDefinition`
 - `SessionContext`
 - `SessionEvent`
-- `PersistedMessageNode`
-- `SessionSnapshot`
 - `CompactResult`
 - `ContextStats`
 

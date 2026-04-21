@@ -318,25 +318,6 @@ class SessionInfo:
     title: str = ""  # 标题。
     model_id: str = ""  # 当前模型 ID。
 
-
-@dataclass(slots=True)
-class SessionSnapshot:
-    session_id: str  # 会话 ID。
-    session_file: Path  # 会话文件路径。
-    cwd: Path  # 会话工作目录。
-    model_id: str  # 当前模型 ID。
-    leaf_id: str | None = None  # 当前叶子节点 ID。
-    entries: list[SessionEntry] = field(default_factory=list)  # 已解析条目列表。
-    header: SessionHeader | None = None  # 头信息对象。
-    title: str = ""  # 会话标题。
-
-    @property
-    def branch_id(self) -> str:
-        """兼容旧接口，返回当前分支标识。"""
-
-        return self.leaf_id or "main"
-
-
 @dataclass(slots=True)
 class CompactResult:
     summary: str  # 生成的摘要文本。

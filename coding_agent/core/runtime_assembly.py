@@ -109,7 +109,6 @@ def build_session_context(
 
 def build_runtime_context_messages(
     session_manager: SessionManager,
-    session_ref: str,
     leaf_id: str | None,
     model: Model,
     system_prompt: str,
@@ -118,4 +117,4 @@ def build_runtime_context_messages(
     """构造压缩判断等运行时需要的上下文对象。"""
 
     _ = model
-    return Context(systemPrompt=system_prompt, messages=session_manager.build_context_messages(session_ref, leaf_id), tools=tools)
+    return Context(systemPrompt=system_prompt, messages=session_manager.build_context_messages(leaf_id), tools=tools)

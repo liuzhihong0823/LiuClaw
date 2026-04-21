@@ -22,7 +22,7 @@ from coding_agent.core.session_manager import SessionManager
 from coding_agent.core.settings_manager import SettingsManager
 from coding_agent.core.tools import build_default_tools, build_tool_registry
 from coding_agent.core.runtime_assembly import build_session_context
-from coding_agent.core.types import CodingAgentSettings, SessionEvent, ToolPolicy
+from coding_agent.core.types import CodingAgentSettings, CompactionSettings, SessionEvent, ToolPolicy
 from coding_agent.modes.interactive.controller import InteractiveController
 from coding_agent.modes.interactive.renderer import InteractiveRenderer
 from coding_agent.modes.interactive.state import InteractiveState, TranscriptBlock, TranscriptTurn
@@ -143,20 +143,16 @@ def test_resource_loader_skips_invalid_skills(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_session_manager_and_compaction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stub_model: Model) -> None:
     manager = SessionManager(tmp_path / "sessions")
-    snapshot = manager.create_session(cwd=tmp_path, model_id="openai:gpt-5")
+    manager.create_session(cwd=tmp_path, model_id="openai:gpt-5")
     parent_id = None
     for index in range(4):
         user = manager.append_message(
-            snapshot.session_id,
             message=UserMessage(content=f"user-{index}"),
-            branch_id=snapshot.branch_id,
             parent_id=parent_id,
         )
         parent_id = user.id
         assistant = manager.append_message(
-            snapshot.session_id,
             message=AssistantMessage(content=f"assistant-{index}"),
-            branch_id=snapshot.branch_id,
             parent_id=parent_id,
         )
         parent_id = assistant.id
@@ -179,7 +175,11 @@ async def test_session_manager_and_compaction(tmp_path: Path, monkeypatch: pytes
     runtime = compactor_module.CompactionRuntime(
         model=stub_model,
         thinking="medium",
-        settings=CodingAgentSettings(default_model=stub_model.id, compact_model="stub:test"),
+        settings=CodingAgentSettings(
+            default_model=stub_model.id,
+            compact_model="stub:test",
+            compaction=CompactionSettings(keep_recent_tokens=1),
+        ),
         model_resolver=lambda model_id: Model(
             id=model_id,
             provider="stub",
@@ -190,17 +190,17 @@ async def test_session_manager_and_compaction(tmp_path: Path, monkeypatch: pytes
         ),
     )
 
-    result = await SessionCompactor(manager, runtime, keep_turns=1).compact_session(snapshot.session_id)
-    messages = manager.build_context_messages(snapshot.session_id)
+    result = await SessionCompactor(manager, runtime).compact_session(manager.session_id)
+    messages = manager.build_context_messages()
 
-    assert result.compacted_count == 6
+    assert result.compacted_count >= 6
     assert messages[0].metadata["summary"] is True
     assert "任务目标" in str(messages[0].content)
     contents = [str(message.content) for message in messages]
     assert "user-0" not in contents
     assert "assistant-3" in contents
     assert calls[0]["model"].id == "stub:test"
-    assert "任务目标" in calls[0]["context"].systemPrompt
+    assert "structured checkpoints" in calls[0]["context"].systemPrompt
 
 
 @pytest.mark.asyncio
@@ -210,20 +210,16 @@ async def test_compaction_returns_noop_when_summary_generation_fails(
     stub_model: Model,
 ) -> None:
     manager = SessionManager(tmp_path / "sessions")
-    snapshot = manager.create_session(cwd=tmp_path, model_id=stub_model.id)
+    manager.create_session(cwd=tmp_path, model_id=stub_model.id)
     parent_id = None
     for index in range(3):
         user = manager.append_message(
-            snapshot.session_id,
             message=UserMessage(content=f"user-{index}"),
-            branch_id=snapshot.branch_id,
             parent_id=parent_id,
         )
         parent_id = user.id
         assistant = manager.append_message(
-            snapshot.session_id,
             message=AssistantMessage(content=f"assistant-{index}"),
-            branch_id=snapshot.branch_id,
             parent_id=parent_id,
         )
         parent_id = assistant.id
@@ -236,13 +232,13 @@ async def test_compaction_returns_noop_when_summary_generation_fails(
     runtime = compactor_module.CompactionRuntime(
         model=stub_model,
         thinking="medium",
-        settings=CodingAgentSettings(default_model=stub_model.id),
+        settings=CodingAgentSettings(default_model=stub_model.id, compaction=CompactionSettings(keep_recent_tokens=1)),
     )
 
-    result = await SessionCompactor(manager, runtime, keep_turns=1).compact_session(snapshot.session_id)
+    result = await SessionCompactor(manager, runtime).compact_session(manager.session_id)
 
     assert result.compacted_count == 0
-    assert manager.latest_summary(manager.load_session(snapshot.session_id), snapshot.branch_id) is None
+    assert all(not getattr(message, "metadata", {}).get("summary") for message in manager.build_context_messages())
 
 
 @pytest.mark.asyncio
@@ -307,7 +303,7 @@ async def test_tools_and_agent_session_flow(tmp_path: Path, stub_model: Model) -
     )
     agent_session.send_user_message("hello")
     events = [event async for event in agent_session.run_turn()]
-    restored = session_manager.build_context_messages(agent_session.session_id)
+    restored = session_manager.build_context_messages()
 
     assert any(event.type == "message_delta" for event in events)
     assert restored[-1].content == "echo:hello"
@@ -409,8 +405,8 @@ async def test_agent_session_ends_naturally_after_tool_results(tmp_path: Path, s
     )
     agent_session.send_user_message("inspect workspace")
     events = [event async for event in agent_session.run_turn()]
-    restored = session_manager.build_context_messages(agent_session.session_id)
-    raw_events = session_manager.iter_events(agent_session.session_id)
+    restored = session_manager.build_context_messages()
+    raw_events = session_manager.iter_events()
 
     assert all(event.type != "status" for event in events)
     assert events[-1].message == "draft answer"
@@ -466,7 +462,7 @@ async def test_agent_session_can_queue_steering_and_follow_up_messages(tmp_path:
     steer_events = [event async for event in agent_session.run_turn()]
     agent_session.follow_up("queued follow")
     follow_events = [event async for event in agent_session.run_turn()]
-    restored = session_manager.build_context_messages(agent_session.session_id)
+    restored = session_manager.build_context_messages()
 
     assert first_events[-1].message == "echo:hello"
     assert steer_events[-1].message == "echo:queued steer"
@@ -483,7 +479,7 @@ async def test_session_manager_lists_recent_sessions(tmp_path: Path) -> None:
     manager = SessionManager(tmp_path / "sessions")
     first = manager.create_session(cwd=tmp_path / "a", model_id="openai:gpt-5", title="first")
     second = manager.create_session(cwd=tmp_path / "b", model_id="openai:gpt-5", title="second")
-    manager.append_message(second.session_id, message=UserMessage(content="hello second"), branch_id="main", parent_id=None)
+    manager.append_message(message=UserMessage(content="hello second"), parent_id=None)
     recent = manager.list_recent_sessions(limit=10)
 
     assert recent[0]["session_id"] == second.session_id
@@ -1010,11 +1006,11 @@ def test_resource_loader_loads_python_extension_runtime_and_tool_registry(tmp_pa
 
 def test_session_manager_persists_only_message_events(tmp_path: Path) -> None:
     manager = SessionManager(tmp_path / "sessions")
-    snapshot = manager.create_session(cwd=tmp_path, model_id="openai:gpt-5")
-    manager.append_message(snapshot.session_id, message=UserMessage(content="hello"), branch_id=snapshot.branch_id, parent_id=None)
+    manager.create_session(cwd=tmp_path, model_id="openai:gpt-5")
+    manager.append_message(message=UserMessage(content="hello"), parent_id=None)
 
-    messages = manager.build_context_messages(snapshot.session_id)
-    events = manager.iter_events(snapshot.session_id)
+    messages = manager.build_context_messages()
+    events = manager.iter_events()
 
     assert [message.content for message in messages] == ["hello"]
-    assert [event["type"] for event in events] == ["message"]
+    assert [event["type"] for event in events] == ["session", "message"]

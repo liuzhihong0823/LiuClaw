@@ -71,16 +71,26 @@ class AgentSession:
         if self.session_file is None and self.session_id is not None:
             self.session_file = str(self.session_manager.resolve_session_file(self.session_id) or "")
         if self.session_id is None and self.session_file is None:
-            snapshot = self.session_manager.create_session(cwd=cwd, model_id=model.id)
-            self.session_id = snapshot.session_id
-            self.session_file = str(snapshot.session_file)
-            self.leaf_id = snapshot.leaf_id
-            self.branch_id = self.leaf_id or branch_id
+            self.session_manager.create_session(cwd=cwd, model_id=model.id)
+            self._sync_with_manager()
         elif self.session_file:
-            snapshot = self.session_manager.load_session(self.session_file)
-            self.session_id = snapshot.session_id
-            self.leaf_id = snapshot.leaf_id
-            self.branch_id = self.leaf_id or branch_id
+            self.session_manager.set_session_file(self.session_file)
+            if branch_id != "main":
+                self.leaf_id = branch_id
+                self.session_manager.branch(branch_id)
+            self._sync_with_manager()
+        else:
+            self.branch_id = branch_id
+
+    def _sync_with_manager(self) -> None:
+        """把当前 manager 中持有的会话状态同步到会话对象字段。"""
+
+        self.session_id = self.session_manager.session_id
+        self.session_file = str(self.session_manager.session_file) if self.session_manager.session_file is not None else None
+        self.leaf_id = self.session_manager.get_leaf_id()
+        self.branch_id = self.leaf_id or "main"
+        if self.session_manager.cwd is not None:
+            self.cwd = self.session_manager.cwd
 
     def _assemble_runtime(self, provider_registry: ProviderRegistry | None = None) -> SessionRuntimeAssembly:
         """装配当前 session 运行时依赖。"""
@@ -204,7 +214,13 @@ class AgentSession:
 
         if not self.session_file:
             raise RuntimeError("No session file to resume")
-        history_context = self.session_manager.build_session_context(self.session_file, self.leaf_id)
+        self.session_manager.set_session_file(self.session_file)
+        if self.leaf_id != self.session_manager.get_leaf_id():
+            if self.leaf_id is None:
+                self.session_manager.reset_leaf()
+            elif self.session_manager.get_entry(self.leaf_id) is not None:
+                self.session_manager.branch(self.leaf_id)
+        history_context = self.session_manager.build_session_context(self.leaf_id)
         if history_context.model and history_context.model.get("model_id") and self.model_registry is not None:
             resolved_id = history_context.model["model_id"]
             if resolved_id and resolved_id != self.model.id:
@@ -227,11 +243,7 @@ class AgentSession:
                 tools=self.runtime.tools,
             )
         )
-        snapshot = self.session_manager.load_session(self.session_file)
-        self.session_id = snapshot.session_id
-        self.leaf_id = self.leaf_id or snapshot.leaf_id
-        self.branch_id = self.leaf_id or "main"
-        self.cwd = snapshot.cwd
+        self._sync_with_manager()
 
     def switch_model(self, model) -> None:
         """切换当前会话使用的模型，并更新系统提示。"""
@@ -243,7 +255,8 @@ class AgentSession:
         self._agent.setTools(self.runtime.tools)
         self._agent.setSystemPrompt(self._build_system_prompt())
         if self.session_file:
-            self.session_manager.append_model_change(self.session_file, model.provider, model.id)
+            self.session_manager.set_session_file(self.session_file)
+            self.session_manager.append_model_change(model.provider, model.id)
             self.resume_session()
 
     def set_thinking(self, thinking: str | None) -> None:
@@ -254,7 +267,8 @@ class AgentSession:
         self._agent.setThinking(thinking)
         self._agent.setSystemPrompt(self._build_system_prompt())
         if self.session_file and thinking:
-            self.session_manager.append_thinking_level_change(self.session_file, thinking)
+            self.session_manager.set_session_file(self.session_file)
+            self.session_manager.append_thinking_level_change(thinking)
             self.resume_session()
 
     async def compact(self, custom_instructions: str | None = None):
@@ -281,7 +295,8 @@ class AgentSession:
 
         if not self.session_file:
             return None
-        messages = self.session_manager.build_context_messages(self.session_file, self.leaf_id)
+        self.session_manager.set_session_file(self.session_file)
+        messages = self.session_manager.build_context_messages(self.leaf_id)
         for message in reversed(messages):
             if isinstance(message, UserMessage):
                 return message.content
@@ -340,8 +355,8 @@ class AgentSession:
 
         if not self.session_file:
             return
+        self.session_manager.set_session_file(self.session_file)
         entry = self.session_manager.append_message(
-            self.session_file,
             message=UserMessage(content=message.content, metadata=dict(message.metadata)),
             parent_id=self.leaf_id,
         )
@@ -353,7 +368,8 @@ class AgentSession:
 
         if not self.session_file:
             return
-        entry = self.session_manager.append_message(self.session_file, message=message, parent_id=self.leaf_id)
+        self.session_manager.set_session_file(self.session_file)
+        entry = self.session_manager.append_message(message=message, parent_id=self.leaf_id)
         self.leaf_id = entry.id
         self.branch_id = self.leaf_id or "main"
 
@@ -362,7 +378,8 @@ class AgentSession:
 
         if not self.session_file:
             return
-        entry = self.session_manager.append_message(self.session_file, message=message, parent_id=self.leaf_id)
+        self.session_manager.set_session_file(self.session_file)
+        entry = self.session_manager.append_message(message=message, parent_id=self.leaf_id)
         self.leaf_id = entry.id
         self.branch_id = self.leaf_id or "main"
 
@@ -506,7 +523,6 @@ class AgentSession:
 
         context = build_runtime_context_messages(
             self.session_manager,
-            self.session_file,
             self.leaf_id,
             self.model,
             self._build_system_prompt(),

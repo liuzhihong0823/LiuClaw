@@ -61,7 +61,8 @@ class CommandCompleter(Completer):
             candidates = [item["session_file"] for item in recent] + [item["session_id"] for item in recent]
         elif command == "/branch":
             if self.controller.session.session_file:
-                candidates = [entry.id for entry in self.controller.session_manager.get_entries(self.controller.session.session_file)]
+                self.controller.session_manager.set_session_file(self.controller.session.session_file)
+                candidates = [entry.id for entry in self.controller.session_manager.get_entries()]
         elif command == "/theme":
             candidates = list(self.controller.session.resource_loader.load().themes.keys())
         elif command == "/thinking":
@@ -168,17 +169,14 @@ class InteractiveController:
             if session_ref is None:
                 self.state.last_error = "没有可恢复的会话"
                 return
-            snapshot = self.session_manager.load_session(session_ref)
-            self.session.session_id = snapshot.session_id
-            self.session.session_file = str(snapshot.session_file)
-            self.session.leaf_id = snapshot.leaf_id
-            self.session.branch_id = snapshot.branch_id
-            self.session.cwd = snapshot.cwd
+            self.session_manager.set_session_file(session_ref)
+            self.session.session_file = str(self.session_manager.session_file or "")
+            self.session.leaf_id = self.session_manager.get_leaf_id()
             self.session.resume_session()
             self.state.clear_output()
             if hasattr(self.renderer, "sync_transcript"):
                 self.renderer.sync_transcript(self.state)
-            self.state.add_status(f"已恢复会话 {snapshot.session_id}")
+            self.state.add_status(f"已恢复会话 {self.session_manager.session_id}")
         elif command == "/fork":
             source = args[0] if args else self._default_resume_session_ref()
             if source is None:
@@ -188,22 +186,20 @@ class InteractiveController:
             if source_file is None:
                 self.state.last_error = f"未知会话: {source}"
                 return
-            leaf_id = self.session_manager.get_leaf_id(source_file)
+            self.session_manager.set_session_file(source_file)
+            leaf_id = self.session_manager.get_leaf_id()
             if leaf_id is None:
                 self.state.last_error = "源会话没有可 fork 的历史"
                 return
-            new_file = self.session_manager.create_branched_session(source_file, leaf_id)
-            snapshot = self.session_manager.load_session(new_file)
-            self.session.session_id = snapshot.session_id
-            self.session.session_file = str(snapshot.session_file)
-            self.session.leaf_id = snapshot.leaf_id
-            self.session.branch_id = snapshot.branch_id
-            self.session.cwd = snapshot.cwd
+            new_file = self.session_manager.create_branched_session(leaf_id)
+            self.session_manager.set_session_file(new_file)
+            self.session.session_file = str(self.session_manager.session_file or "")
+            self.session.leaf_id = self.session_manager.get_leaf_id()
             self.session.resume_session()
             self.state.clear_output()
             if hasattr(self.renderer, "sync_transcript"):
                 self.renderer.sync_transcript(self.state)
-            self.state.add_status(f"已 fork 到新会话 {snapshot.session_id}")
+            self.state.add_status(f"已 fork 到新会话 {self.session_manager.session_id}")
         elif command == "/branch":
             if not args:
                 self.show_help("用法: /branch <entry_id>")
@@ -211,9 +207,10 @@ class InteractiveController:
             if not self.session.session_file:
                 self.state.last_error = "当前没有活动会话"
                 return
-            snapshot = self.session_manager.branch(self.session.session_file, args[0])
-            self.session.leaf_id = snapshot.leaf_id
-            self.session.branch_id = snapshot.branch_id
+            self.session_manager.set_session_file(self.session.session_file)
+            self.session_manager.branch(args[0])
+            self.session.leaf_id = self.session_manager.get_leaf_id()
+            self.session.branch_id = self.session.leaf_id or "main"
             self.session.resume_session()
             self.state.clear_output()
             if hasattr(self.renderer, "sync_transcript"):
@@ -226,7 +223,8 @@ class InteractiveController:
             if not self.session.session_file:
                 self.state.last_error = "当前没有活动会话"
                 return
-            self.session_manager.append_label_change(self.session.session_file, args[0], " ".join(args[1:]))
+            self.session_manager.set_session_file(self.session.session_file)
+            self.session_manager.append_label_change(args[0], " ".join(args[1:]))
             self.state.add_status(f"已标记 {args[0]}")
         elif command == "/model":
             if not args:
