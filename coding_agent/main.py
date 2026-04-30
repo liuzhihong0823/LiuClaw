@@ -6,6 +6,7 @@ from pathlib import Path
 from .cli import parse_args
 from .config.paths import build_agent_paths, find_project_settings_file
 from .core import AgentSession, ModelRegistry, ResourceLoader, SessionManager, SettingsManager
+from .core.multi_agent import TeamRuntime
 from .modes.interactive import InteractiveApp
 
 
@@ -57,6 +58,13 @@ def main(argv: list[str] | None = None) -> int:
         model_registry=registry,
         session_id=None,
         session_file=None if args.new else session_file,
+    )
+    session.attach_team_runtime(
+        TeamRuntime(
+            owner_session=session,
+            workspace_root=workspace_root,
+            model_registry=registry,
+        )
     )
     if session_file:
         session.resume_session()

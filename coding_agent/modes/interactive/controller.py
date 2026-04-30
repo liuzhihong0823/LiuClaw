@@ -8,6 +8,7 @@ from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import InMemoryHistory
 
 from ...core import AgentSession, ModelRegistry
+from ...core.multi_agent import TeamRuntime
 from ...core.types import SessionEvent
 from .state import InteractiveState
 
@@ -42,6 +43,7 @@ class CommandCompleter(Completer):
             "/retry",
             "/bottom",
             "/top",
+            "/team",
         ]
         if not text.startswith("/"):
             return
@@ -67,6 +69,8 @@ class CommandCompleter(Completer):
             candidates = list(self.controller.session.resource_loader.load().themes.keys())
         elif command == "/thinking":
             candidates = ["low", "medium", "high"]
+        elif command == "/team":
+            candidates = ["inbox", "requests", "shutdown"]
         for candidate in candidates:
             if candidate.startswith(current):
                 yield Completion(candidate, start_position=-len(current))
@@ -149,6 +153,7 @@ class InteractiveController:
         command = parts[0]
         args = parts[1:]
         if command == "/new":
+            previous_team_runtime = getattr(self.session, "team_runtime", None)
             self.session = AgentSession(
                 workspace_root=self.session.workspace_root,
                 cwd=self.session.cwd,
@@ -159,6 +164,14 @@ class InteractiveController:
                 resource_loader=self.session.resource_loader,
                 model_registry=self.session.model_registry,
                 session_file=None,
+            )
+            self.session.attach_team_runtime(
+                TeamRuntime(
+                    owner_session=self.session,
+                    workspace_root=self.session.workspace_root,
+                    model_registry=self.model_registry,
+                    shared_state=previous_team_runtime.shared_state if previous_team_runtime is not None else None,
+                )
             )
             self.state.clear_output()
             if hasattr(self.renderer, "sync_transcript"):
@@ -268,7 +281,7 @@ class InteractiveController:
                 )
         elif command == "/help":
             self.show_help(
-                "Commands: /new /resume [session] /fork [session] /branch <entry_id> /label <entry_id> <name> /model <id> /thinking <level> /compact /theme <name> /pwd /sessions /clear /retry /exit"
+                "Commands: /new /resume [session] /fork [session] /branch <entry_id> /label <entry_id> <name> /model <id> /thinking <level> /compact /theme <name> /pwd /sessions /team /clear /retry /exit"
             )
         elif command == "/clear":
             self.clear_output()
@@ -288,9 +301,63 @@ class InteractiveController:
             self.jump_to_latest()
         elif command == "/top":
             self.jump_to_oldest()
+        elif command == "/team":
+            await self.handle_team_command(args)
         else:
             self.state.last_error = f"unknown command: {command}"
         self.state.sync_from_session(self.session)
+
+    async def handle_team_command(self, args: list[str]) -> None:
+        """处理团队协作相关命令。"""
+
+        team_runtime = getattr(self.session, "team_runtime", None)
+        if team_runtime is None:
+            self.state.add_status("当前会话未启用 multi-agent 团队运行时")
+            return
+        if not args:
+            members = team_runtime.list_members()
+            if not members:
+                self.state.add_status("当前团队暂无成员")
+                return
+            for member in members:
+                status = member.status
+                handle = team_runtime.shared_state.handles.get(member.name)
+                if status == "idle" and handle is not None and handle.is_polling:
+                    status = "idle(polling)"
+                self.state.add_status(
+                    f"{member.name} | role={member.role} | status={status} | session={member.session_id or '-'}"
+                )
+            return
+        subcommand = args[0]
+        if subcommand == "inbox":
+            target = args[1] if len(args) > 1 else team_runtime.owner_name
+            messages = team_runtime.peek_inbox(target)
+            if not messages:
+                self.state.add_status(f"{target} 收件箱为空")
+                return
+            for message in messages:
+                self.state.add_status(
+                    f"{target} <- {message.sender} | type={message.message_type} | request_id={message.request_id or '-'} | {message.content}"
+                )
+            return
+        if subcommand == "requests":
+            requests = team_runtime.list_protocol_requests()
+            if not requests:
+                self.state.add_status("当前没有协议请求")
+                return
+            for request in requests:
+                self.state.add_status(
+                    f"{request.request_id} | kind={request.kind} | status={request.status} | from={request.sender} | to={request.recipient}"
+                )
+            return
+        if subcommand == "shutdown":
+            if len(args) < 2:
+                self.show_help("用法: /team shutdown <name>")
+                return
+            request = team_runtime.shutdown(args[1])
+            self.state.add_status(f"已向 {args[1]} 发起关停请求: {request.request_id}")
+            return
+        self.show_help("用法: /team [inbox [name]|requests|shutdown <name>]")
 
     def cancel_current(self) -> None:
         """取消当前会话执行任务。"""

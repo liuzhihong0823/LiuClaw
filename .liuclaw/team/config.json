@@ -1,0 +1,17 @@
+{
+  "team_name": "default",
+  "members": [
+    {
+      "name": "ai_module_analyzer",
+      "role": "文档分析专家",
+      "status": "idle",
+      "session_id": "a58c093b4609",
+      "session_file": "/Users/admin/.LiuClaw/agent/sessions/--Users-admin-PyCharmProject-LiuClaw--/2026-04-30T07-03-59-900186Z_a58c093b4609.jsonl",
+      "parent_session": "/Users/admin/.LiuClaw/agent/sessions/--Users-admin-PyCharmProject-LiuClaw--/2026-04-30T07-01-39-929193Z_4ce6a4f143a2.jsonl",
+      "model_id": "zhipu:glm-5",
+      "thinking": "medium",
+      "last_error": "",
+      "updated_at": 1777532683.370951
+    }
+  ]
+}

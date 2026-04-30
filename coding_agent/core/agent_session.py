@@ -64,6 +64,8 @@ class AgentSession:
         self._current_assistant_message_id = ""  # 当前 assistant 消息 ID。
         self._turn_counter = 0  # turn 计数器。
         self._current_turn_id = ""  # 当前处理中的 turn ID。
+        self._prompt_fragments: list[str] = []  # 追加到系统提示末尾的运行期片段。
+        self.team_runtime = None  # 当前会话绑定的团队运行时，默认无。
         self.runtime = self._assemble_runtime(provider_registry=registry)  # 当前 session 装配出的运行时组件。
         self.compaction: CompactionCoordinator = self.runtime.compaction  # 上下文压缩协调器。
         self._stream_fn = stream_fn  # 自定义底层流式函数。
@@ -135,7 +137,13 @@ class AgentSession:
             resources=self.runtime.resources,
             tool_registry=self.runtime.tool_registry,
         )
-        return self.runtime.prompt_builder.build(context)
+        prompt = self.runtime.prompt_builder.build(context)
+        if not self._prompt_fragments:
+            return prompt
+        fragments = [fragment.strip() for fragment in self._prompt_fragments if fragment and fragment.strip()]
+        if not fragments:
+            return prompt
+        return "\n\n".join([prompt, *fragments])
 
     @property
     def resources(self):
@@ -228,6 +236,7 @@ class AgentSession:
                     self.model = self.model_registry.get(resolved_id)
                     self.runtime = self._assemble_runtime(provider_registry=self.runtime.provider_registry)
                     self.compaction = self.runtime.compaction
+                    self._reapply_runtime_integrations()
                     self._agent.setModel(self.model)
                     self._agent.setTools(self.runtime.tools)
                 except Exception:
@@ -245,12 +254,36 @@ class AgentSession:
         )
         self._sync_with_manager()
 
+    def set_prompt_fragments(self, fragments: list[str]) -> None:
+        """设置运行期追加的系统提示片段。"""
+
+        self._prompt_fragments = [fragment for fragment in fragments if fragment and fragment.strip()]
+        self._agent.setSystemPrompt(self._build_system_prompt())
+
+    def attach_team_runtime(self, team_runtime) -> None:
+        """在会话初始化后挂接团队运行时，并同步工具与系统提示。"""
+
+        self.team_runtime = team_runtime
+        team_runtime.register_tools(self.runtime.tool_registry)
+        self.runtime.tools = self.runtime.tool_registry.active_tools
+        self._agent.setTools(self.runtime.tools)
+        self._agent.setSystemPrompt(self._build_system_prompt())
+
+    def _reapply_runtime_integrations(self) -> None:
+        """在 runtime 重建后补挂运行期集成能力。"""
+
+        if self.team_runtime is None:
+            return
+        self.team_runtime.register_tools(self.runtime.tool_registry)
+        self.runtime.tools = self.runtime.tool_registry.active_tools
+
     def switch_model(self, model) -> None:
         """切换当前会话使用的模型，并更新系统提示。"""
 
         self.model = model
         self.runtime = self._assemble_runtime(provider_registry=self.runtime.provider_registry)
         self.compaction = self.runtime.compaction
+        self._reapply_runtime_integrations()
         self._agent.setModel(model)
         self._agent.setTools(self.runtime.tools)
         self._agent.setSystemPrompt(self._build_system_prompt())
