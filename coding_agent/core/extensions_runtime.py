@@ -8,7 +8,7 @@ from typing import Any
 
 from agent_core import AgentTool
 
-from .types import ExtensionCommand, ExtensionResource, ExtensionRuntime
+from .types import ExtensionResource, ExtensionRuntime
 
 
 @dataclass(slots=True)
@@ -17,7 +17,6 @@ class ExtensionApi:
 
     source: str  # 当前扩展来源标识。
     tools: list[AgentTool] = field(default_factory=list)  # 扩展注册的工具。
-    commands: list[ExtensionCommand] = field(default_factory=list)  # 扩展注册的命令。
     provider_factories: dict[str, Any] = field(default_factory=dict)  # 扩展提供的 provider 工厂。
     event_listeners: list[Any] = field(default_factory=list)  # 扩展订阅的事件监听器。
     prompt_fragments: list[str] = field(default_factory=list)  # 扩展追加的系统提示片段。
@@ -28,11 +27,6 @@ class ExtensionApi:
         tool.metadata = dict(tool.metadata)
         tool.metadata.setdefault("source", self.source)
         self.tools.append(tool)
-
-    def register_command(self, name: str, handler=None, *, description: str = "") -> None:
-        """注册一个扩展命令。"""
-
-        self.commands.append(ExtensionCommand(name=name, handler=handler, description=description, source=self.source))
 
     def register_provider(self, name: str, factory) -> None:
         """注册一个 provider 工厂。"""
@@ -91,7 +85,6 @@ def load_extension_runtime(extensions: list[ExtensionResource]) -> ExtensionRunt
         api = ExtensionApi(source=extension.source or str(extension.module_path))
         _load_single_extension(extension.module_path, api)
         runtime.tools.extend(api.tools)
-        runtime.commands.extend(api.commands)
         runtime.provider_factories.update(api.provider_factories)
         runtime.event_listeners.extend(api.event_listeners)
         runtime.prompt_fragments.extend(api.prompt_fragments)

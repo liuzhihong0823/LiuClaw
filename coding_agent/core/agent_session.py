@@ -432,12 +432,8 @@ class AgentSession:
                 SessionEvent(
                     type="message_start",
                     message="",
-                    panel="main",
                     message_id=self._current_assistant_message_id,
                     turn_id=self._current_turn_id,
-                    source="assistant",
-                    render_group="assistant",
-                    render_order=400,
                 )
             ]
         if event.type == "message_update":
@@ -445,13 +441,9 @@ class AgentSession:
                 SessionEvent(
                     type="message_delta",
                     delta=event.messageDelta or "",
-                    panel="main",
                     is_transient=True,
                     message_id=self._current_assistant_message_id,
                     turn_id=self._current_turn_id,
-                    source="assistant",
-                    render_group="assistant",
-                    render_order=400,
                 )
             ]
         if event.type == "message_end" and isinstance(event.message, UserMessage):
@@ -463,24 +455,16 @@ class AgentSession:
                     SessionEvent(
                         type="thinking",
                         message=event.message.thinking,
-                        panel="thinking",
                         message_id=self._current_assistant_message_id,
                         turn_id=self._current_turn_id,
-                        source="thinking",
-                        render_group="thinking",
-                        render_order=200,
                     )
                 )
             events.append(
                 SessionEvent(
                     type="message_end",
                     message=event.message.content,
-                    panel="main",
                     message_id=self._current_assistant_message_id,
                     turn_id=self._current_turn_id,
-                    source="assistant",
-                    render_group="assistant",
-                    render_order=400,
                 )
             )
             return events
@@ -489,14 +473,10 @@ class AgentSession:
                 SessionEvent(
                     type="tool_start",
                     tool_name=event.toolCall.name if event.toolCall else "",
-                    panel="tool",
                     status_level="info",
                     tool_arguments=event.toolCall.arguments_text if event.toolCall else "",
                     message_id=event.toolCall.id if event.toolCall else "",
                     turn_id=self._current_turn_id,
-                    source="tool",
-                    render_group="pre_assistant",
-                    render_order=250,
                 )
             ]
         if event.type == "tool_execution_update":
@@ -506,15 +486,11 @@ class AgentSession:
                     type="tool_update",
                     tool_name=name,
                     message=f"running {name}",
-                    panel="tool",
                     status_level="info",
                     is_transient=True,
                     tool_arguments=event.toolCall.arguments_text if event.toolCall else "",
                     message_id=event.toolCall.id if event.toolCall else "",
                     turn_id=self._current_turn_id,
-                    source="tool",
-                    render_group="pre_assistant",
-                    render_order=260,
                 )
             ]
         if event.type == "tool_execution_end":
@@ -525,14 +501,10 @@ class AgentSession:
                     type="tool_end",
                     tool_name=tool_name,
                     message=tool_message,
-                    panel="tool",
                     status_level="error" if event.error else "success",
                     tool_output_preview=str(tool_message)[:300],
                     message_id=event.toolResult.toolCallId if event.toolResult else "",
                     turn_id=self._current_turn_id,
-                    source="tool",
-                    render_group="pre_assistant",
-                    render_order=270,
                 )
             ]
         if event.type == "agent_end" and event.error:
@@ -541,12 +513,8 @@ class AgentSession:
                     type="error",
                     error=event.error,
                     message=event.error,
-                    panel="error",
                     status_level="error",
                     turn_id=self._current_turn_id,
-                    source="error",
-                    render_group="error",
-                    render_order=500,
                 )
             ]
         return events

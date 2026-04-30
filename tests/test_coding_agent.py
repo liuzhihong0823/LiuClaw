@@ -177,8 +177,7 @@ async def test_session_manager_and_compaction(tmp_path: Path, monkeypatch: pytes
         thinking="medium",
         settings=CodingAgentSettings(
             default_model=stub_model.id,
-            compact_model="stub:test",
-            compaction=CompactionSettings(keep_recent_tokens=1),
+            compaction=CompactionSettings(keep_recent_tokens=1, compact_model="stub:test"),
         ),
         model_resolver=lambda model_id: Model(
             id=model_id,
@@ -589,22 +588,17 @@ def test_renderer_keeps_full_history_and_scroll_api() -> None:
                 turn_id=f"turn-{index}",
                 user_prompt_preview=f"question-{index}",
                 user_block=TranscriptBlock(id=f"user-{index}", kind="user", title="User", body=f"question-{index}"),
-                assistant_block=TranscriptBlock(
-                    id=f"assistant-{index}",
-                    kind="assistant",
-                    title="Assistant",
-                    body=f"body-{index}",
-                ),
+                blocks=[TranscriptBlock(id=f"assistant-{index}", kind="assistant", title="Assistant", body=f"body-{index}")],
                 completed=True,
             )
         )
     state.rebuild_transcript()
     renderer = InteractiveRenderer(state)
-    renderer.sync_transcript()
+    renderer.sync_transcript_content()
 
     assert "body-0" in renderer.transcript_buffer.text
     assert "body-29" in renderer.transcript_buffer.text
-    renderer.scroll_main(3)
+    renderer.scroll_main_lines(3)
     assert renderer.main_window.vertical_scroll == 3
 
 
@@ -682,7 +676,7 @@ def test_renderer_jump_to_bottom_and_follow_logic() -> None:
     )
     state.rebuild_transcript()
     renderer = InteractiveRenderer(state)
-    renderer.sync_transcript()
+    renderer.sync_transcript_content()
     renderer.main_window.render_info = type("FakeRenderInfo", (), {"window_height": 20})()
     renderer.main_window.vertical_scroll = 10
     state.mark_history_view()
@@ -712,7 +706,7 @@ def test_renderer_follow_after_render_uses_real_render_info() -> None:
     )
     state.rebuild_transcript()
     renderer = InteractiveRenderer(state)
-    renderer.sync_transcript()
+    renderer.sync_transcript_content()
     renderer.main_window.render_info = type("FakeRenderInfo", (), {"window_height": 20})()
     renderer.follow_output_if_needed()
     renderer.update_scroll_after_render()
@@ -729,7 +723,7 @@ def test_interactive_state_builds_transcript_without_blank_assistant_blocks() ->
         theme="default",
     )
     state.start_user_turn("inspect file", "turn-1")
-    state.apply_event(SessionEvent(type="status", message="准备执行工具", is_transient=True, panel="status", source="steering", turn_id="turn-1"))
+    state.apply_event(SessionEvent(type="status", message="准备执行工具", is_transient=True, turn_id="turn-1"))
     state.apply_event(SessionEvent(type="message_start", message_id="a1", turn_id="turn-1"))
     state.apply_event(SessionEvent(type="message_delta", message_id="a1", delta="first", turn_id="turn-1"))
     state.apply_event(SessionEvent(type="message_delta", message_id="a1", delta=" second", turn_id="turn-1"))
@@ -738,9 +732,68 @@ def test_interactive_state_builds_transcript_without_blank_assistant_blocks() ->
     state.apply_event(SessionEvent(type="tool_end", tool_name="read", message="ok", tool_output_preview="ok", message_id="t1", turn_id="turn-1"))
 
     assert state.transcript_text.count("[Assistant]") == 1
+    assert "[Assistant]\nfirst second" in state.transcript_text
     assert "[Thinking]\n先分析文件结构" in state.transcript_text
     assert "[Tool:read] success\nargs: {\"path\":\"a.txt\"}\nok" in state.transcript_text
-    assert state.transcript_text.index("[User]") < state.transcript_text.index("[Thinking]") < state.transcript_text.index("[Tool:read] success") < state.transcript_text.index("[Assistant]")
+    assert state.transcript_text.index("[User]") < state.transcript_text.index("[Assistant]") < state.transcript_text.index("[Thinking]") < state.transcript_text.index("[Tool:read] success")
+
+
+def test_interactive_state_preserves_interleaved_event_order_with_single_assistant_block() -> None:
+    state = InteractiveState(
+        session_id="s1",
+        model_id="stub:test",
+        thinking="medium",
+        cwd=Path("/tmp"),
+        theme="default",
+    )
+    state.start_user_turn("inspect file", "turn-1")
+    state.apply_event(SessionEvent(type="message_start", message_id="a1", turn_id="turn-1"))
+    state.apply_event(SessionEvent(type="message_delta", message_id="a1", delta="first", turn_id="turn-1"))
+    state.apply_event(SessionEvent(type="tool_start", tool_name="read", tool_arguments='{"path":"a.txt"}', message_id="t1", turn_id="turn-1"))
+    state.apply_event(SessionEvent(type="tool_end", tool_name="read", message="ok", tool_output_preview="ok", message_id="t1", turn_id="turn-1"))
+    state.apply_event(SessionEvent(type="message_delta", message_id="a1", delta=" second", turn_id="turn-1"))
+
+    assert state.transcript_text.count("[Assistant]") == 1
+    assert "[Assistant]\nfirst second" in state.transcript_text
+    assert state.transcript_text.index("[Assistant]") < state.transcript_text.index("[Tool:read] success")
+    turn = state.transcript_turns[0]
+    assert [block.kind for block in turn.blocks] == ["assistant", "tool"]
+
+
+def test_interactive_state_keeps_late_thinking_at_event_position() -> None:
+    state = InteractiveState(
+        session_id="s1",
+        model_id="stub:test",
+        thinking="medium",
+        cwd=Path("/tmp"),
+        theme="default",
+    )
+    state.start_user_turn("inspect file", "turn-1")
+    state.apply_event(SessionEvent(type="tool_start", tool_name="read", tool_arguments='{"path":"a.txt"}', message_id="t1", turn_id="turn-1"))
+    state.apply_event(SessionEvent(type="tool_end", tool_name="read", message="ok", tool_output_preview="ok", message_id="t1", turn_id="turn-1"))
+    state.apply_event(SessionEvent(type="thinking", message="补充分析", message_id="think-1", turn_id="turn-1"))
+
+    assert state.transcript_text.index("[Tool:read] success") < state.transcript_text.index("[Thinking]")
+    assert [block.kind for block in state.transcript_turns[0].blocks] == ["tool", "thinking"]
+
+
+def test_interactive_state_updates_tool_block_in_place() -> None:
+    state = InteractiveState(
+        session_id="s1",
+        model_id="stub:test",
+        thinking="medium",
+        cwd=Path("/tmp"),
+        theme="default",
+    )
+    state.start_user_turn("inspect file", "turn-1")
+    state.apply_event(SessionEvent(type="tool_start", tool_name="read", tool_arguments='{"path":"a.txt"}', message_id="t1", turn_id="turn-1"))
+    state.apply_event(SessionEvent(type="tool_end", tool_name="read", message="ok", tool_output_preview="ok", message_id="t1", turn_id="turn-1"))
+
+    turn = state.transcript_turns[0]
+    assert [block.kind for block in turn.blocks] == ["tool"]
+    assert len([block for block in turn.blocks if block.kind == "tool"]) == 1
+    assert turn.blocks[0].status == "success"
+    assert turn.blocks[0].body == 'args: {"path":"a.txt"}\nok'
 
 
 def test_renderer_applies_theme_styles_and_focus_returns_to_input() -> None:
@@ -977,7 +1030,6 @@ def test_resource_loader_loads_python_extension_runtime_and_tool_registry(tmp_pa
                 "",
                 "def register(api):",
                 "    api.extend_system_prompt('EXT PROMPT')",
-                "    api.register_command('demo', description='demo command')",
                 "    api.register_provider('demo_provider', lambda **kwargs: None)",
                 "    async def execute(arguments, context):",
                 "        return 'demo-result'",
@@ -999,7 +1051,6 @@ def test_resource_loader_loads_python_extension_runtime_and_tool_registry(tmp_pa
         registry.register_tool(tool, source=tool.metadata.get("source", "extension"))
 
     assert bundle.extension_runtime.prompt_fragments == ["EXT PROMPT"]
-    assert bundle.extension_runtime.commands[0].name == "demo"
     assert "demo_provider" in bundle.extension_runtime.provider_factories
     assert any(tool.name == "demo_tool" for tool in registry.active_tools)
 

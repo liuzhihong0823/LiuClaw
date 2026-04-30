@@ -19,7 +19,6 @@ SessionEventType = Literal[
     "tool_end",
     "error",
 ]
-SessionPanel = Literal["main", "status", "thinking", "tool", "error"]
 StatusLevel = Literal["info", "success", "warning", "error"]
 ToolMode = Literal["workspace-write", "read-only"]
 
@@ -64,11 +63,6 @@ class CodingAgentSettings:
     tool_policy: ToolPolicy = field(default_factory=ToolPolicy)  # 工具执行限制策略。
     compaction: CompactionSettings = field(default_factory=CompactionSettings)  # 上下文压缩配置。
     branch_summary: BranchSummarySettings = field(default_factory=BranchSummarySettings)  # 分支摘要配置。
-    # Legacy fields kept for backwards compatibility while the codebase migrates.
-    auto_compact: bool = True  # 旧版自动压缩开关，保留兼容。
-    compact_threshold: float = 0.8  # 旧版压缩阈值，保留兼容。
-    compact_keep_turns: int = 4  # 旧版保留轮次数配置，保留兼容。
-    compact_model: str | None = None  # 旧版压缩模型字段，保留兼容。
 
 
 @dataclass(slots=True)
@@ -102,17 +96,8 @@ class ExtensionResource:
 
 
 @dataclass(slots=True)
-class ExtensionCommand:
-    name: str  # 扩展命令名。
-    handler: Callable[..., Any] | None = None  # 命令处理函数。
-    description: str = ""  # 命令描述。
-    source: str = ""  # 命令来源扩展。
-
-
-@dataclass(slots=True)
 class ExtensionRuntime:
     tools: list[AgentTool] = field(default_factory=list)  # 扩展贡献的工具集合。
-    commands: list[ExtensionCommand] = field(default_factory=list)  # 扩展贡献的命令集合。
     provider_factories: dict[str, Callable[..., Any]] = field(default_factory=dict)  # 扩展注册的 provider 工厂。
     event_listeners: list[Callable[[AgentEvent], Any]] = field(default_factory=list)  # 扩展订阅的事件监听器。
     prompt_fragments: list[str] = field(default_factory=list)  # 追加到系统提示词末尾的片段。
@@ -176,17 +161,12 @@ class SessionEvent:
     delta: str = ""  # 流式增量文本。
     tool_name: str = ""  # 关联工具名。
     error: str | None = None  # 错误描述。
-    panel: SessionPanel = "main"  # 默认渲染面板。
     status_level: StatusLevel = "info"  # 状态级别。
     is_transient: bool = False  # 是否为临时态事件。
     tool_arguments: str = ""  # 工具参数文本。
     tool_output_preview: str = ""  # 工具输出预览。
     message_id: str = ""  # 消息标识。
     turn_id: str = ""  # 所属轮次标识。
-    source: str = ""  # 事件来源。
-    render_group: str = ""  # UI 渲染分组。
-    render_order: int = 0  # UI 渲染顺序。
-    payload: dict[str, Any] = field(default_factory=dict)  # 扩展负载数据。
 
 
 @dataclass(slots=True)

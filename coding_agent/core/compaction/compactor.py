@@ -243,7 +243,7 @@ class SessionCompactor:
     def _resolve_summary_model(self) -> Model:
         """解析压缩专用模型；若未配置则回退到当前模型。"""
 
-        compact_model = self.runtime.settings.compaction.compact_model or self.runtime.settings.compact_model
+        compact_model = self.runtime.settings.compaction.compact_model
         if compact_model and self.runtime.model_resolver is not None:
             resolver = self.runtime.model_resolver
             return resolver.get(compact_model) if hasattr(resolver, "get") else resolver(compact_model)

@@ -114,10 +114,12 @@ if __name__ == "__main__":
 
 - `default_model`
 - `default_thinking`
-- `auto_compact`
-- `compact_threshold`
-- `compact_keep_turns`
-- `compact_model`：压缩摘要时优先使用的模型
+- `compaction`
+  - `enabled`
+  - `reserve_tokens`
+  - `keep_recent_tokens`
+  - `compact_model`：压缩摘要时优先使用的模型
+- `branch_summary`
 - `theme`
 - `system_prompt_override`
 - `tool_policy`
@@ -570,7 +572,8 @@ if __name__ == "__main__":
 
 它会调用 `ai.utils.context_window.detect_context_overflow()` 估算上下文使用量，然后由 `triggers.should_compact()` 根据：
 
-- `compact_threshold`
+- `compaction.enabled`
+- `compaction.reserve_tokens`
 - 当前估算 token 占比
 - 模型上下文上限
 
@@ -596,7 +599,7 @@ if __name__ == "__main__":
   - `未完成事项`
   - `风险与注意点`
 
-摘要模型优先读取 `compact_model`，未配置时回退当前会话模型。这样压缩后的 summary 更适合后续继续任务，而不只是机械压缩聊天记录。
+摘要模型优先读取 `compaction.compact_model`，未配置时回退当前会话模型。这样压缩后的 summary 更适合后续继续任务，而不只是机械压缩聊天记录。
 
 ## 共享类型设计
 

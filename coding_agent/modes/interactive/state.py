@@ -8,28 +8,6 @@ from ...core.agent_session import AgentSession
 from ...core.types import SessionEvent
 from ...core.themes_loader import DEFAULT_THEME_DATA
 
-
-@dataclass(slots=True)
-class MessageCard:
-    """表示兼容旧状态结构保留的一张消息卡片。"""
-
-    id: str  # 卡片 ID。
-    title: str  # 卡片标题。
-    body: str = ""  # 卡片正文。
-    style: str = "assistant"  # 卡片样式类型。
-
-
-@dataclass(slots=True)
-class ToolCard:
-    """表示兼容旧状态结构保留的一张工具卡片。"""
-
-    id: str  # 卡片 ID。
-    tool_name: str  # 工具名。
-    status: str  # 工具状态。
-    arguments: str = ""  # 工具参数摘要。
-    output_preview: str = ""  # 工具输出摘要。
-
-
 @dataclass(slots=True)
 class TranscriptBlock:
     """表示 transcript 中的一个稳定块。"""
@@ -40,8 +18,6 @@ class TranscriptBlock:
     body: str = ""  # 块正文。
     status: str = ""  # 工具或状态块的状态值。
     tool_name: str = ""  # 关联工具名。
-    source: str = ""  # 块来源。
-    render_order: int = 0  # 渲染排序权重。
     collapsed: bool = False  # 是否折叠显示。
 
 
@@ -52,10 +28,7 @@ class TranscriptTurn:
     turn_id: str  # turn 唯一 ID。
     user_prompt_preview: str  # 用户输入摘要。
     user_block: TranscriptBlock  # 用户输入块。
-    thinking_blocks: list[TranscriptBlock] = field(default_factory=list)  # thinking 块列表。
-    tool_blocks: list[TranscriptBlock] = field(default_factory=list)  # 工具块列表。
-    status_blocks: list[TranscriptBlock] = field(default_factory=list)  # 状态块列表。
-    assistant_block: TranscriptBlock | None = None  # assistant 主回复块。
+    blocks: list[TranscriptBlock] = field(default_factory=list)  # 按事件到达顺序记录的可见块。
     started_at: str = ""  # turn 开始时间。
     completed: bool = False  # turn 是否已完成。
 
@@ -77,16 +50,12 @@ class InteractiveState:
     last_error: str = ""  # 最近一次错误消息。
     status_message: str = ""  # 状态栏当前文案。
     current_tool: str = ""  # 当前正在执行的工具名。
-    output_cards: list[MessageCard] = field(default_factory=list)  # 旧输出卡片结构。
-    thinking_cards: list[MessageCard] = field(default_factory=list)  # 旧 thinking 卡片结构。
-    tool_cards: list[ToolCard] = field(default_factory=list)  # 旧工具卡片结构。
     transcript_turns: list[TranscriptTurn] = field(default_factory=list)  # transcript turn 列表。
     transcript_orphans: list[TranscriptBlock] = field(default_factory=list)  # 未归属 turn 的块。
     transcript_text: str = "No output yet.\n"  # 主输出区全文本。
     transcript_line_count: int = 1  # 主输出区总行数。
     transcript_line_styles: dict[int, str] = field(default_factory=dict)  # 行号到样式的映射。
     transcript_blocks: list[TranscriptBlock] = field(default_factory=list)  # 展平后的块序列。
-    last_visible_block_id: str = ""  # 最后一个可见块 ID。
     transcript_revision: int = 0  # transcript 修订号。
     last_rendered_revision: int = -1  # 最近一次已渲染修订号。
     last_known_bottom_line: int = 0  # 最近一次已知底部行号。
@@ -133,16 +102,12 @@ class InteractiveState:
     def clear_output(self) -> None:
         """清空主输出区、思考区和工具区内容。"""
 
-        self.output_cards.clear()
-        self.thinking_cards.clear()
-        self.tool_cards.clear()
         self.transcript_turns.clear()
         self.transcript_orphans.clear()
         self.transcript_blocks.clear()
         self.transcript_text = "No output yet.\n"
         self.transcript_line_count = 1
         self.transcript_line_styles.clear()
-        self.last_visible_block_id = ""
         self.transcript_revision += 1
         self.last_rendered_revision = -1
         self.last_known_bottom_line = 0
@@ -206,8 +171,6 @@ class InteractiveState:
             kind="user",
             title="User",
             body=preview,
-            source="user",
-            render_order=100,
         )
         turn = TranscriptTurn(
             turn_id=turn_id,
@@ -232,7 +195,6 @@ class InteractiveState:
                 return False
             block = self._ensure_assistant_block(turn, event.message_id)
             block.body += event.delta
-            self._sync_legacy_assistant_card(block)
             visible_output = True
         elif event.type == "message_end":
             if turn is None:
@@ -240,22 +202,18 @@ class InteractiveState:
             block = self._ensure_assistant_block(turn, event.message_id)
             if event.message:
                 block.body = event.message
-            self._sync_legacy_assistant_card(block)
             turn.completed = True
             visible_output = True
         elif event.type == "thinking":
             if turn is None:
                 return False
             block = TranscriptBlock(
-                id=event.message_id or f"{turn.turn_id}-thinking-{len(turn.thinking_blocks) + 1}",
+                id=event.message_id or f"{turn.turn_id}-thinking-{self._next_block_index(turn, 'thinking')}",
                 kind="thinking",
                 title="Thinking",
                 body=event.message,
-                source=event.source or "thinking",
-                render_order=event.render_order or 200,
             )
-            turn.thinking_blocks.append(block)
-            self.thinking_cards.append(MessageCard(id=block.id, title=block.title, body=block.body, style="thinking"))
+            turn.blocks.append(block)
             visible_output = True
         elif event.type == "status":
             self.add_status(event.message)
@@ -264,24 +222,14 @@ class InteractiveState:
                 return False
             self.current_tool = event.tool_name
             block = TranscriptBlock(
-                id=event.message_id or f"{turn.turn_id}-tool-{len(turn.tool_blocks) + 1}",
+                id=event.message_id or f"{turn.turn_id}-tool-{self._next_block_index(turn, 'tool')}",
                 kind="tool",
                 title=f"Tool:{event.tool_name}",
                 status="running",
                 tool_name=event.tool_name,
                 body=self._render_tool_body(event.tool_arguments, ""),
-                source=event.source or "tool",
-                render_order=event.render_order or 250,
             )
-            turn.tool_blocks.append(block)
-            self.tool_cards.append(
-                ToolCard(
-                    id=block.id,
-                    tool_name=event.tool_name,
-                    status="running",
-                    arguments=event.tool_arguments,
-                )
-            )
+            turn.blocks.append(block)
             self.add_status(f"工具开始: {event.tool_name}")
             visible_output = True
         elif event.type == "tool_update":
@@ -302,13 +250,11 @@ class InteractiveState:
                 kind="error",
                 title="Error",
                 body=event.message,
-                source=event.source or "error",
-                render_order=event.render_order or 500,
             )
             if turn is None:
                 self.transcript_orphans.append(block)
             else:
-                turn.status_blocks.append(block)
+                turn.blocks.append(block)
             visible_output = True
         if visible_output:
             self.register_output_update(event)
@@ -322,7 +268,6 @@ class InteractiveState:
             self.transcript_text = "No output yet.\n"
             self.transcript_line_count = 1
             self.transcript_line_styles = {0: "status"}
-            self.last_visible_block_id = ""
             self.transcript_revision += 1
             self.last_known_bottom_line = 0
             self.transcript_blocks = []
@@ -331,16 +276,7 @@ class InteractiveState:
         line_styles: dict[int, str] = {}
         flattened: list[TranscriptBlock] = []
         for turn in self.transcript_turns:
-            block_sequence = [turn.user_block]
-            block_sequence.extend(turn.thinking_blocks)
-            middle_blocks = sorted(
-                [*turn.status_blocks, *turn.tool_blocks],
-                key=lambda block: (block.render_order, block.id),
-            )
-            block_sequence.extend(middle_blocks)
-            if turn.assistant_block is not None:
-                block_sequence.append(turn.assistant_block)
-            for block in block_sequence:
+            for block in [turn.user_block, *turn.blocks]:
                 flattened.append(block)
                 self._append_block_lines(lines, line_styles, block)
         for block in self.transcript_orphans:
@@ -350,7 +286,6 @@ class InteractiveState:
         self.transcript_line_count = self.transcript_text.count("\n") or 1
         self.transcript_line_styles = line_styles
         self.transcript_blocks = flattened
-        self.last_visible_block_id = flattened[-1].id if flattened else ""
         self.transcript_revision += 1
         self.last_known_bottom_line = max(0, self.transcript_line_count - 1)
 
@@ -372,8 +307,6 @@ class InteractiveState:
                 kind="user",
                 title="User",
                 body="",
-                source="user",
-                render_order=100,
             ),
         )
         self.transcript_turns.append(placeholder)
@@ -383,29 +316,16 @@ class InteractiveState:
         """确保当前 turn 的 assistant block 已存在。"""
 
         block_id = message_id or f"{turn.turn_id}-assistant"
-        if turn.assistant_block is not None:
-            return turn.assistant_block
+        block = self._find_turn_block(turn, kind="assistant", block_id=block_id)
+        if block is not None:
+            return block
         block = TranscriptBlock(
             id=block_id,
             kind="assistant",
             title="Assistant",
-            source="assistant",
-            render_order=400,
         )
-        turn.assistant_block = block
-        self._sync_legacy_assistant_card(block)
+        turn.blocks.append(block)
         return block
-
-    def _sync_legacy_assistant_card(self, block: TranscriptBlock) -> None:
-        """同步 assistant block 到旧卡片结构，兼容现有测试和调用。"""
-
-        for card in self.output_cards:
-            if card.id == block.id:
-                card.body = block.body
-                card.title = block.title
-                card.style = "assistant"
-                return
-        self.output_cards.append(MessageCard(id=block.id, title=block.title, body=block.body, style="assistant"))
 
     def _finalize_tool_block(self, turn: TranscriptTurn, event: SessionEvent) -> None:
         """把工具结束事件回写到对应工具块和旧工具卡片中。"""
@@ -413,43 +333,47 @@ class InteractiveState:
         status = "error" if event.status_level == "error" else "success"
         preview = event.tool_output_preview or event.message
         arguments = event.tool_arguments
-        block = None
-        for candidate in reversed(turn.tool_blocks):
-            if candidate.id == event.message_id or candidate.tool_name == event.tool_name:
-                block = candidate
-                break
+        block = self._find_turn_block(turn, kind="tool", block_id=event.message_id, tool_name=event.tool_name)
         if block is None:
             block = TranscriptBlock(
-                id=event.message_id or f"{turn.turn_id}-tool-{len(turn.tool_blocks) + 1}",
+                id=event.message_id or f"{turn.turn_id}-tool-{self._next_block_index(turn, 'tool')}",
                 kind="tool",
                 title=f"Tool:{event.tool_name}",
                 tool_name=event.tool_name,
-                source=event.source or "tool",
-                render_order=event.render_order or 270,
             )
-            turn.tool_blocks.append(block)
+            turn.blocks.append(block)
         if not arguments and block.body:
             first_line = block.body.splitlines()[0]
             if first_line.startswith("args: "):
                 arguments = first_line[len("args: ") :]
         block.status = status
         block.body = self._render_tool_body(arguments, preview)
-        for card in reversed(self.tool_cards):
-            if card.id == block.id or card.tool_name == event.tool_name:
-                card.status = status
-                if arguments:
-                    card.arguments = arguments
-                card.output_preview = preview
-                return
-        self.tool_cards.append(
-            ToolCard(
-                id=block.id,
-                tool_name=event.tool_name,
-                status=status,
-                arguments=arguments,
-                output_preview=preview,
-            )
-        )
+
+    @staticmethod
+    def _find_turn_block(
+        turn: TranscriptTurn,
+        *,
+        kind: str,
+        block_id: str = "",
+        tool_name: str = "",
+    ) -> TranscriptBlock | None:
+        """在 turn 的有序块列表中查找对应块。"""
+
+        if block_id:
+            for candidate in turn.blocks:
+                if candidate.kind == kind and candidate.id == block_id:
+                    return candidate
+        if tool_name:
+            for candidate in reversed(turn.blocks):
+                if candidate.kind == kind and candidate.tool_name == tool_name:
+                    return candidate
+        return None
+
+    @staticmethod
+    def _next_block_index(turn: TranscriptTurn, kind: str) -> int:
+        """返回 turn 内某类块的下一个序号。"""
+
+        return sum(1 for block in turn.blocks if block.kind == kind) + 1
 
     def _append_block_lines(self, lines: list[str], line_styles: dict[int, str], block: TranscriptBlock) -> None:
         """把一个块追加到 transcript 文本，并记录每一行的样式。"""

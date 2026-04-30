@@ -130,25 +130,6 @@ class InteractiveRenderer:
         if self.application is not None:
             self.application.invalidate()
 
-    def sync_transcript(self, state: InteractiveState | None = None) -> bool:
-        """把最新 transcript 文本同步到只读 buffer。"""
-
-        current_state = state or self.state
-        if current_state.transcript_revision == current_state.last_rendered_revision:
-            return False
-        text = current_state.transcript_text
-        self.transcript_buffer.set_document(Document(text, cursor_position=len(text)), bypass_readonly=True)
-        current_state.last_rendered_revision = current_state.transcript_revision
-        return True
-
-    def preserve_or_follow_after_transcript_update(self) -> None:
-        """在 transcript 更新后根据状态决定跟随最新还是保留历史视口。"""
-
-        if self.state.auto_follow_output:
-            self._pending_follow_after_render = True
-            return
-        self.state.unseen_output_updates = max(1, self.state.unseen_output_updates)
-
     def refresh_style(self) -> None:
         """在主题切换后立即刷新应用样式。"""
 
@@ -285,21 +266,11 @@ class InteractiveRenderer:
         self._update_view_mode_from_viewport()
         self.invalidate()
 
-    def scroll_main(self, delta: int) -> None:
-        """兼容旧接口，按显示行滚动主输出区。"""
-
-        self.scroll_main_lines(delta)
-
     def scroll_main_pages(self, delta_pages: int) -> None:
         """按页滚动主输出区。"""
 
         page = max(1, self.get_main_viewport()["window_height"] - 1)
         self.scroll_main_lines(delta_pages * page)
-
-    def scroll_main_page(self, delta_pages: int) -> None:
-        """兼容旧接口，按页滚动主输出区。"""
-
-        self.scroll_main_pages(delta_pages)
 
     def scroll_main_to_top(self, invalidate: bool = True) -> bool:
         """跳转到最早可见位置。"""
@@ -386,11 +357,6 @@ class InteractiveRenderer:
         current_state.last_rendered_revision = current_state.transcript_revision
         return True
 
-    def sync_transcript(self, state: InteractiveState | None = None) -> bool:
-        """兼容旧接口，默认只同步内容。"""
-
-        return self.sync_transcript_content(state)
-
     def reconcile_viewport_after_content_change(self) -> None:
         """在 transcript 内容变化后根据最新/历史模式协调视口。"""
 
@@ -423,11 +389,6 @@ class InteractiveRenderer:
             "top": vertical_scroll,
             "bottom": vertical_scroll + window_height,
         }
-
-    def get_main_content_height(self) -> int:
-        """返回主输出区当前内容高度。"""
-
-        return self.get_main_viewport()["content_height"]
 
     def _bottom_scroll_target(self) -> int | None:
         """根据当前 transcript 文档和窗口高度计算底部滚动位置。"""
@@ -463,17 +424,6 @@ class InteractiveRenderer:
 
         if not self.state.is_running:
             self.focus_input()
-
-    def handle_main_mouse(self, mouse_event) -> bool:
-        """把主输出区的滚轮事件路由到统一滚动逻辑。"""
-
-        if mouse_event.event_type == MouseEventType.SCROLL_UP:
-            self.scroll_main_lines(-3)
-            return True
-        if mouse_event.event_type == MouseEventType.SCROLL_DOWN:
-            self.scroll_main_lines(3)
-            return True
-        return False
 
     def handle_main_mouse_scroll(self, direction: str) -> None:
         """显式处理主输出区的鼠标滚轮事件。"""

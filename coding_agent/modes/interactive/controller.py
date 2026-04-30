@@ -117,12 +117,12 @@ class InteractiveController:
         try:
             self.session.send_user_message(text)
             self.state.start_user_turn(text, self.session.current_turn_id)
-            if hasattr(self.renderer, "sync_transcript"):
+            if hasattr(self.renderer, "sync_transcript_content"):
                 self.renderer.sync_transcript_content(self.state)
                 self.renderer.reconcile_viewport_after_content_change()
             async for event in self.session.run_turn():
                 visible_output = self.state.apply_event(event)
-                if visible_output and hasattr(self.renderer, "sync_transcript"):
+                if visible_output and hasattr(self.renderer, "sync_transcript_content"):
                     self.renderer.sync_transcript_content(self.state)
                     self.renderer.reconcile_viewport_after_content_change()
                 self.renderer.invalidate()
@@ -131,9 +131,9 @@ class InteractiveController:
         except Exception as exc:
             self.state.last_error = str(exc)
             visible_output = self.state.apply_event(
-                SessionEvent(type="error", message=str(exc), error=str(exc), panel="error", status_level="error")
+                SessionEvent(type="error", message=str(exc), error=str(exc), status_level="error")
             )
-            if visible_output and hasattr(self.renderer, "sync_transcript"):
+            if visible_output and hasattr(self.renderer, "sync_transcript_content"):
                 self.renderer.sync_transcript_content(self.state)
                 self.renderer.reconcile_viewport_after_content_change()
         finally:
@@ -174,8 +174,8 @@ class InteractiveController:
                 )
             )
             self.state.clear_output()
-            if hasattr(self.renderer, "sync_transcript"):
-                self.renderer.sync_transcript(self.state)
+            if hasattr(self.renderer, "sync_transcript_content"):
+                self.renderer.sync_transcript_content(self.state)
             self.state.add_status(f"新会话已创建: {self.session.session_id}")
         elif command == "/resume":
             session_ref = args[0] if args else self._default_resume_session_ref()
@@ -187,8 +187,8 @@ class InteractiveController:
             self.session.leaf_id = self.session_manager.get_leaf_id()
             self.session.resume_session()
             self.state.clear_output()
-            if hasattr(self.renderer, "sync_transcript"):
-                self.renderer.sync_transcript(self.state)
+            if hasattr(self.renderer, "sync_transcript_content"):
+                self.renderer.sync_transcript_content(self.state)
             self.state.add_status(f"已恢复会话 {self.session_manager.session_id}")
         elif command == "/fork":
             source = args[0] if args else self._default_resume_session_ref()
@@ -210,8 +210,8 @@ class InteractiveController:
             self.session.leaf_id = self.session_manager.get_leaf_id()
             self.session.resume_session()
             self.state.clear_output()
-            if hasattr(self.renderer, "sync_transcript"):
-                self.renderer.sync_transcript(self.state)
+            if hasattr(self.renderer, "sync_transcript_content"):
+                self.renderer.sync_transcript_content(self.state)
             self.state.add_status(f"已 fork 到新会话 {self.session_manager.session_id}")
         elif command == "/branch":
             if not args:
@@ -226,8 +226,8 @@ class InteractiveController:
             self.session.branch_id = self.session.leaf_id or "main"
             self.session.resume_session()
             self.state.clear_output()
-            if hasattr(self.renderer, "sync_transcript"):
-                self.renderer.sync_transcript(self.state)
+            if hasattr(self.renderer, "sync_transcript_content"):
+                self.renderer.sync_transcript_content(self.state)
             self.state.add_status(f"已切换到分支节点 {args[0]}")
         elif command == "/label":
             if len(args) < 2:
@@ -401,22 +401,22 @@ class InteractiveController:
     def scroll_main_up(self) -> None:
         """向上滚动主输出区一行。"""
 
-        self.renderer.scroll_main(-1)
+        self.renderer.scroll_main_lines(-1)
 
     def scroll_main_down(self) -> None:
         """向下滚动主输出区一行。"""
 
-        self.renderer.scroll_main(1)
+        self.renderer.scroll_main_lines(1)
 
     def scroll_main_page_up(self) -> None:
         """向上滚动主输出区一页。"""
 
-        self.renderer.scroll_main_page(-1)
+        self.renderer.scroll_main_pages(-1)
 
     def scroll_main_page_down(self) -> None:
         """向下滚动主输出区一页。"""
 
-        self.renderer.scroll_main_page(1)
+        self.renderer.scroll_main_pages(1)
 
     def jump_to_latest(self) -> None:
         """跳转到最新消息并恢复自动跟随。"""

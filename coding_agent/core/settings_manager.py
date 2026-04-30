@@ -37,14 +37,13 @@ class SettingsManager:
         merged = _deep_merge(global_data, project_data)
         tool_policy = ToolPolicy(**merged.get("tool_policy", {}))
         compaction_raw = dict(merged.get("compaction", {}))
-        compact_model = merged.get("compact_model", compaction_raw.get("compact_model"))
         compaction = CompactionSettings(
-            enabled=bool(compaction_raw.get("enabled", merged.get("auto_compact", True))),
+            enabled=bool(compaction_raw.get("enabled", True)),
             reserve_tokens=int(compaction_raw.get("reserve_tokens", compaction_raw.get("reserveTokens", 16384))),
             keep_recent_tokens=int(
                 compaction_raw.get("keep_recent_tokens", compaction_raw.get("keepRecentTokens", 20000))
             ),
-            compact_model=compact_model,
+            compact_model=compaction_raw.get("compact_model"),
         )
         branch_summary_raw = dict(merged.get("branch_summary", {}))
         branch_summary = BranchSummarySettings(
@@ -59,10 +58,6 @@ class SettingsManager:
             tool_policy=tool_policy,
             compaction=compaction,
             branch_summary=branch_summary,
-            auto_compact=bool(merged.get("auto_compact", True)),
-            compact_threshold=float(merged.get("compact_threshold", 0.8)),
-            compact_keep_turns=int(merged.get("compact_keep_turns", 4)),
-            compact_model=compact_model,
         )
 
     def save_global(self, settings: CodingAgentSettings) -> None:
