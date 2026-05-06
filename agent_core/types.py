@@ -446,6 +446,7 @@ class AgentLoopConfig:
     afterToolCall: AfterToolCallFn | None = None  # 工具执行后钩子。
     retryPolicy: RetryPolicyFn | None = None  # 错误重试策略。
     registry: ProviderRegistry | None = None  # provider 注册表。
+    traceRecorder: Any | None = None  # 可选 trace 记录器。
 
     def __init__(
         self,
@@ -463,6 +464,7 @@ class AgentLoopConfig:
         afterToolCall: AfterToolCallFn | None = None,
         retryPolicy: RetryPolicyFn | None = None,
         registry: ProviderRegistry | None = None,
+        traceRecorder: Any | None = None,
         *,
         steer: GetSteeringMessagesFn | None = None,
         followUp: GetFollowUpMessagesFn | None = None,
@@ -481,6 +483,7 @@ class AgentLoopConfig:
         self.afterToolCall = afterToolCall  # 工具后置钩子。
         self.retryPolicy = retryPolicy  # 重试策略。
         self.registry = registry  # provider 注册表。
+        self.traceRecorder = traceRecorder  # trace 记录器。
 
     @property
     def steer(self) -> GetSteeringMessagesFn | None:

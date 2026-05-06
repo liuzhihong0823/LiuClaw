@@ -26,3 +26,17 @@ def parse_args(argv: list[str] | None = None):
     """解析命令行参数并返回结果对象。"""
 
     return build_parser().parse_args(argv)
+
+
+def parse_trace_args(argv: list[str]) -> argparse.Namespace:
+    """解析 replay/trace 子命令参数。"""
+
+    parser = argparse.ArgumentParser(prog="coding-agent")
+    subparsers = parser.add_subparsers(dest="trace_command", required=True)
+    replay = subparsers.add_parser("replay")
+    replay.add_argument("trace_ref")
+    trace = subparsers.add_parser("trace")
+    trace_sub = trace.add_subparsers(dest="trace_action", required=True)
+    show = trace_sub.add_parser("show")
+    show.add_argument("trace_ref")
+    return parser.parse_args(argv)

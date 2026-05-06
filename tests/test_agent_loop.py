@@ -10,6 +10,7 @@ from ai.options import Options
 from ai.providers.base import Provider
 from ai.registry import ProviderRegistry
 from agent_core import (
+    AgentTraceCollector,
     AfterToolCallPass,
     AfterToolCallReplace,
     AgentLoopConfig,
@@ -18,6 +19,7 @@ from agent_core import (
     BeforeToolCallAllow,
     BeforeToolCallError,
     BeforeToolCallSkip,
+    RetryDecision,
     agentLoop,
     agentLoopContinue,
 )
@@ -238,6 +240,90 @@ async def test_agent_loop_emits_basic_message_lifecycle(stub_model: Model) -> No
         "agent_end",
     ]
     assert events[7].message.content == "echo:hello"
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_trace_collector_records_retry(stub_model: Model) -> None:
+    attempts = {"count": 0}
+
+    async def flaky_stream(model, context, thinking, registry=None, signal=None):
+        _ = model, context, thinking, registry, signal
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise RuntimeError("temporary failure")
+        return FakeSession(
+            [
+                StreamEvent(type="start", provider="stub", model=stub_model),
+                StreamEvent(
+                    type="done",
+                    provider="stub",
+                    model=stub_model,
+                    assistantMessage=AssistantMessage(content="ok"),
+                ),
+            ]
+        )
+
+    loop = make_loop(
+        stub_model,
+        stream=flaky_stream,
+        retryPolicy=lambda context: RetryDecision(shouldRetry=context.attempt == 1, delaySeconds=0.0),
+    )
+    collector = AgentTraceCollector(loop)
+    loop.traceRecorder = collector
+    session = await agentLoop(loop, initialMessages=[UserMessage(content="hello")])
+    await collect_events(session)
+    record = collector.finalize()
+
+    assert record.retry_events
+    assert record.retry_events[0].error_message == "temporary failure"
+    assert record.outcome.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_trace_collector_records_before_tool_error(stub_model: Model) -> None:
+    async def custom_stream(model, context, thinking, registry=None):
+        _ = model, context, thinking, registry
+        has_tool_result = any(isinstance(message, ToolResultMessage) for message in context.history)
+        if has_tool_result:
+            return FakeSession(
+                [
+                    StreamEvent(type="start", provider="stub", model=stub_model),
+                    StreamEvent(
+                        type="done",
+                        provider="stub",
+                        model=stub_model,
+                        assistantMessage=AssistantMessage(content="done"),
+                    ),
+                ]
+            )
+        return FakeSession(
+            [
+                StreamEvent(type="start", provider="stub", model=stub_model),
+                StreamEvent(
+                    type="done",
+                    provider="stub",
+                    model=stub_model,
+                    assistantMessage=AssistantMessage(
+                        content="checking",
+                        toolCalls=[ToolCall(id="call_1", name="lookup", arguments='{\"q\":\"spec\"}')],
+                    ),
+                ),
+            ]
+        )
+
+    loop = make_loop(
+        stub_model,
+        stream=custom_stream,
+        beforeToolCall=lambda context: BeforeToolCallError(error="blocked"),
+        tools=[AgentTool(name="lookup", description="demo", inputSchema={"type": "object"}, execute=lambda *args: "unused")],
+    )
+    collector = AgentTraceCollector(loop)
+    loop.traceRecorder = collector
+    session = await agentLoop(loop, initialMessages=[UserMessage(content="tool")])
+    await collect_events(session)
+    record = collector.finalize()
+
+    assert any(event.type == "before_tool_result" and event.metadata["outcome"] == "error" for turn in record.turns for event in turn.events)
 
 
 @pytest.mark.asyncio

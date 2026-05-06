@@ -291,6 +291,8 @@ async def _open_stream(
 
     model = ensure_model(loop.model or state.model)
     context = await _to_agent_context(state, loop)
+    if getattr(loop, "traceRecorder", None) is not None:
+        loop.traceRecorder.record_context_snapshot(state.runtime_flags.turnIndex, context)
     stream_fn = loop.stream or _default_stream
     try:
         return await stream_fn(model, context, loop.thinking or state.thinking, loop.registry, signal=signal)
@@ -337,8 +339,24 @@ async def _handle_provider_error(
         )
     )
     if not decision.shouldRetry:
+        if getattr(loop, "traceRecorder", None) is not None:
+            loop.traceRecorder.record_retry_decision(
+                state.runtime_flags.turnIndex,
+                error_message=error_message,
+                retry_count=state.runtime_flags.retryCount + 1,
+                should_retry=False,
+                delay_seconds=decision.delaySeconds,
+            )
         return False
     state.runtime_flags.retryCount += 1
+    if getattr(loop, "traceRecorder", None) is not None:
+        loop.traceRecorder.record_retry_decision(
+            state.runtime_flags.turnIndex,
+            error_message=error_message,
+            retry_count=state.runtime_flags.retryCount,
+            should_retry=True,
+            delay_seconds=decision.delaySeconds,
+        )
     if decision.delaySeconds > 0:
         await asyncio.sleep(decision.delaySeconds)
     return True
@@ -525,11 +543,24 @@ async def prepareToolCall(
             agentContext=context.agentContext,
         )
     if isinstance(before_result, BeforeToolCallSkip):
+        if getattr(loop, "traceRecorder", None) is not None:
+            loop.traceRecorder.record_before_tool_result(
+                state.runtime_flags.turnIndex,
+                tool_call,
+                outcome="skip",
+            )
         return PreparedToolCallError(
             toolCall=tool_call,
             shortcutResult=_normalize_tool_result(before_result.result, tool_call),
         )
     if isinstance(before_result, BeforeToolCallError):
+        if getattr(loop, "traceRecorder", None) is not None:
+            loop.traceRecorder.record_before_tool_result(
+                state.runtime_flags.turnIndex,
+                tool_call,
+                outcome="error",
+                error_message=before_result.error,
+            )
         return PreparedToolCallError(
             toolCall=tool_call,
             error=AgentError(kind="tool_error", message=before_result.error, details=before_result.details),
@@ -857,11 +888,15 @@ async def runAgentLoop(
             await _emit_event(queue, event_type="message_end", state=state, payload={"message": message})
         await runLoop(state, loop, queue, signal, first_turn_started=True)
     except asyncio.CancelledError:
+        if getattr(loop, "traceRecorder", None) is not None:
+            loop.traceRecorder.record_abort(state.runtime_flags.turnIndex, signal.reason or "agent loop cancelled")
         signal.abort("agent loop cancelled")
         state.runtime_flags.isCancelled = True
         state.error = AgentError(kind="aborted", message="agent loop cancelled")
         await _emit_event(queue, event_type="agent_end", state=state, payload={"error": state.error})
     except Exception as exc:
+        if getattr(loop, "traceRecorder", None) is not None:
+            loop.traceRecorder.record_abort(state.runtime_flags.turnIndex, str(exc))
         state.error = AgentError(kind="runtime_error", message=str(exc))
         await _emit_event(queue, event_type="agent_end", state=state, payload={"error": state.error})
     finally:

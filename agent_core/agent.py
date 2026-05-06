@@ -209,6 +209,11 @@ class Agent:
         self.state.tools = copied_tools
         self._loop.tools = [replace(tool) for tool in copied_tools]
 
+    def setTraceRecorder(self, recorder) -> None:
+        """为后续运行挂接或清空 trace 记录器。"""
+
+        self._loop.traceRecorder = recorder
+
     def subscribe(self, listener: AgentEventListener) -> None:
         """注册一个新的事件监听器。"""
 
@@ -455,6 +460,7 @@ class Agent:
             afterToolCall=self._loop.afterToolCall,
             retryPolicy=self._loop.retryPolicy,
             registry=self._loop.registry,
+            traceRecorder=self._loop.traceRecorder,
         )
 
     def _cleanup_after_run(self) -> None:

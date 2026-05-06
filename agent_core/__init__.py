@@ -1,5 +1,6 @@
 from .agent import Agent, AgentOptions
 from .agent_loop import agentLoop, agentLoopContinue
+from .trace import AgentTraceCollector, TraceRecord, TraceReplayLoader, TraceSerializer, build_trace_listener
 from .types import (
     AbortSignal,
     AfterToolCallContext,
@@ -42,6 +43,7 @@ __all__ = [
     "AgentState",
     "AgentStreamFn",
     "AgentTool",
+    "AgentTraceCollector",
     "BeforeToolCallAllow",
     "BeforeToolCallContext",
     "BeforeToolCallError",
@@ -50,6 +52,10 @@ __all__ = [
     "RetryContext",
     "RetryDecision",
     "ToolExecutionMode",
+    "TraceRecord",
+    "TraceReplayLoader",
+    "TraceSerializer",
     "agentLoop",
     "agentLoopContinue",
+    "build_trace_listener",
 ]

@@ -18,11 +18,13 @@ from agent_core import (
     BeforeToolCallAllow,
     BeforeToolCallContext,
 )
+from agent_core.trace import AgentTraceCollector, build_trace_listener
 
 from .compaction import CompactionCoordinator
 from .resource_loader import ResourceLoader
 from .runtime_assembly import SessionRuntimeAssembly, assemble_session_runtime, build_runtime_context_messages, build_session_context
 from .session_manager import SessionManager
+from .trace import SessionTraceArtifacts, write_trace_record
 from .types import CodingAgentSettings, SessionEvent
 
 
@@ -66,6 +68,9 @@ class AgentSession:
         self._current_turn_id = ""  # 当前处理中的 turn ID。
         self._prompt_fragments: list[str] = []  # 追加到系统提示末尾的运行期片段。
         self.team_runtime = None  # 当前会话绑定的团队运行时，默认无。
+        self.trace_enabled = True  # 是否为每次 run 落 trace。
+        self._active_trace_collector: AgentTraceCollector | None = None  # 当前运行的 trace 收集器。
+        self._last_trace_artifacts: SessionTraceArtifacts | None = None  # 最近一次运行生成的 trace 文件。
         self.runtime = self._assemble_runtime(provider_registry=registry)  # 当前 session 装配出的运行时组件。
         self.compaction: CompactionCoordinator = self.runtime.compaction  # 上下文压缩协调器。
         self._stream_fn = stream_fn  # 自定义底层流式函数。
@@ -269,6 +274,22 @@ class AgentSession:
         self._agent.setTools(self.runtime.tools)
         self._agent.setSystemPrompt(self._build_system_prompt())
 
+    def set_trace_enabled(self, enabled: bool) -> None:
+        """启用或关闭会话级 trace 落盘。"""
+
+        self.trace_enabled = enabled
+
+    def get_last_trace_paths(self) -> dict[str, str] | None:
+        """返回最近一次 run 生成的 trace 路径。"""
+
+        if self._last_trace_artifacts is None:
+            return None
+        return {
+            "run_id": self._last_trace_artifacts.run_id,
+            "trace_json": self._last_trace_artifacts.json_path,
+            "replay_markdown": self._last_trace_artifacts.markdown_path,
+        }
+
     def _reapply_runtime_integrations(self) -> None:
         """在 runtime 重建后补挂运行期集成能力。"""
 
@@ -310,6 +331,16 @@ class AgentSession:
         if not self.session_file:
             raise RuntimeError("No active session file")
         result = await self.compaction.compact_manual(self.session_file, self.leaf_id, custom_instructions=custom_instructions)
+        if self._active_trace_collector is not None:
+            self._active_trace_collector.record_compaction(
+                "manual_compact",
+                {
+                    "turn_index": self._agent.getState().runtime_flags.turnIndex,
+                    "compacted_count": result.compacted_count,
+                    "tokens_before": result.tokens_before,
+                    "first_kept_entry_id": result.first_kept_entry_id,
+                },
+            )
         self.resume_session()
         return result
 
@@ -338,28 +369,71 @@ class AgentSession:
     async def run_turn(self) -> AsyncIterator[SessionEvent]:
         """运行一轮会话，并把底层事件映射为 UI 事件流。"""
 
+        listener = None
+        if self.trace_enabled:
+            self._active_trace_collector = AgentTraceCollector(self._agent._loop, self._agent.getState())
+            listener = build_trace_listener(self._active_trace_collector)
+            self._agent.subscribe(listener)
+            self._agent.setTraceRecorder(self._active_trace_collector)
         attempt = 0
-        while True:
-            try:
-                async for event in self._run_turn_once():
-                    overflow = self._extract_overflow_error(event)
-                    if overflow and attempt == 0:
+        try:
+            while True:
+                try:
+                    async for event in self._run_turn_once():
+                        overflow = self._extract_overflow_error(event)
+                        if overflow and attempt == 0:
+                            recovered = await self.compaction.recover_from_overflow(self.session_file, self.leaf_id)
+                            if recovered is not None:
+                                if self._active_trace_collector is not None:
+                                    self._active_trace_collector.record_compaction(
+                                        "recover_from_overflow",
+                                        {
+                                            "turn_index": self._agent.getState().runtime_flags.turnIndex,
+                                            "compacted_count": recovered.compacted_count,
+                                            "tokens_before": recovered.tokens_before,
+                                            "first_kept_entry_id": recovered.first_kept_entry_id,
+                                        },
+                                    )
+                                attempt += 1
+                                self.resume_session()
+                                break
+                        yield event
+                    else:
+                        return
+                except Exception as exc:
+                    if attempt == 0 and self._is_context_overflow_error(str(exc)):
                         recovered = await self.compaction.recover_from_overflow(self.session_file, self.leaf_id)
                         if recovered is not None:
+                            if self._active_trace_collector is not None:
+                                self._active_trace_collector.record_compaction(
+                                    "recover_from_overflow",
+                                    {
+                                        "turn_index": self._agent.getState().runtime_flags.turnIndex,
+                                        "compacted_count": recovered.compacted_count,
+                                        "tokens_before": recovered.tokens_before,
+                                        "first_kept_entry_id": recovered.first_kept_entry_id,
+                                    },
+                                )
                             attempt += 1
                             self.resume_session()
-                            break
-                    yield event
-                else:
-                    return
-            except Exception as exc:
-                if attempt == 0 and self._is_context_overflow_error(str(exc)):
-                    recovered = await self.compaction.recover_from_overflow(self.session_file, self.leaf_id)
-                    if recovered is not None:
-                        attempt += 1
-                        self.resume_session()
-                        continue
-                raise
+                            continue
+                    raise
+        finally:
+            if listener is not None:
+                self._agent.unsubscribe(listener)
+                self._agent.setTraceRecorder(None)
+            if self.trace_enabled and self._active_trace_collector is not None and self.session_file is not None:
+                record = self._active_trace_collector.finalize(
+                    session_metadata={
+                        "session_file": self.session_file,
+                        "leaf_id": self.leaf_id or "",
+                        "cwd": str(self.cwd),
+                        "workspace_root": str(self.workspace_root),
+                        "last_user_message": self.get_last_user_message() or "",
+                    }
+                )
+                self._last_trace_artifacts = write_trace_record(record, self.session_file)
+            self._active_trace_collector = None
 
     async def _run_turn_once(self) -> AsyncIterator[SessionEvent]:
         """执行单次 turn，不包含 overflow 恢复重试。"""
@@ -529,7 +603,18 @@ class AgentSession:
             self._build_system_prompt(),
             self.runtime.tools,
         )
-        return await self.compaction.maybe_compact_for_threshold(self.session_file, self.leaf_id, self.model, context)
+        result = await self.compaction.maybe_compact_for_threshold(self.session_file, self.leaf_id, self.model, context)
+        if result is not None and self._active_trace_collector is not None:
+            self._active_trace_collector.record_compaction(
+                "auto_compact_before_turn",
+                {
+                    "turn_index": self._agent.getState().runtime_flags.turnIndex,
+                    "compacted_count": result.compacted_count,
+                    "tokens_before": result.tokens_before,
+                    "first_kept_entry_id": result.first_kept_entry_id,
+                },
+            )
+        return result
 
     async def _before_tool_call(self, context: BeforeToolCallContext):
         """在工具调用前允许执行，并把可见性留给工具事件。"""

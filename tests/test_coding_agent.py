@@ -23,6 +23,7 @@ from coding_agent.core.settings_manager import SettingsManager
 from coding_agent.core.tools import build_default_tools, build_tool_registry
 from coding_agent.core.runtime_assembly import build_session_context
 from coding_agent.core.types import CodingAgentSettings, CompactionSettings, SessionEvent, ToolPolicy
+from coding_agent.core.trace import TraceReplayLoader
 from coding_agent.modes.interactive.controller import InteractiveController
 from coding_agent.modes.interactive.renderer import InteractiveRenderer
 from coding_agent.modes.interactive.state import InteractiveState, TranscriptBlock, TranscriptTurn
@@ -1012,6 +1013,101 @@ def test_model_registry_cli_and_main(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     assert exit_code == 0
     assert run_state == {"model": "stub:test", "thinking": "low"}
+
+
+@pytest.mark.asyncio
+async def test_agent_session_writes_trace_and_replay_files(tmp_path: Path, stub_model: Model) -> None:
+    settings = CodingAgentSettings(default_model=stub_model.id)
+    home_root = tmp_path / "home"
+    paths = build_agent_paths(home_root)
+    paths.ensure_exists()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    resource_loader = ResourceLoader(
+        skills_dir=paths.skills_dir,
+        prompts_dir=paths.prompts_dir,
+        themes_dir=paths.themes_dir,
+        extensions_dir=paths.extensions_dir,
+        workspace_root=workspace,
+    )
+    session_manager = SessionManager(paths.sessions_dir)
+
+    async def fake_stream(model, context, thinking, registry=None):
+        _ = model, context, thinking, registry
+        return FakeSession(
+            [
+                StreamEvent(type="start", provider="stub", model=stub_model),
+                StreamEvent(type="text_delta", provider="stub", model=stub_model, text="ok"),
+                StreamEvent(
+                    type="done",
+                    provider="stub",
+                    model=stub_model,
+                    assistantMessage=AssistantMessage(content="ok"),
+                ),
+            ]
+        )
+
+    session = AgentSession(
+        workspace_root=workspace,
+        cwd=workspace,
+        model=stub_model,
+        thinking="medium",
+        settings=settings,
+        session_manager=session_manager,
+        resource_loader=resource_loader,
+        stream_fn=fake_stream,
+    )
+    session.send_user_message("hello")
+    _ = [event async for event in session.run_turn()]
+    trace_paths = session.get_last_trace_paths()
+
+    assert trace_paths is not None
+    assert Path(trace_paths["trace_json"]).exists()
+    assert Path(trace_paths["replay_markdown"]).exists()
+    loaded = TraceReplayLoader.load(trace_paths["trace_json"])
+    assert loaded.outcome.status == "completed"
+    assert loaded.turns
+
+
+def test_trace_cli_replay_and_show(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    home_root = tmp_path / "home"
+    paths = build_agent_paths(home_root)
+    paths.ensure_exists()
+    monkeypatch.setattr(main_module, "build_agent_paths", lambda: paths)
+
+    trace_dir = paths.sessions_dir / "--tmp--" / "session.trace"
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    json_path = trace_dir / "run123.json"
+    md_path = trace_dir / "run123.md"
+    json_path.write_text(
+        json.dumps(
+            {
+                "run_id": "run123",
+                "started_at": "2026-01-01T00:00:00+00:00",
+                "finished_at": "2026-01-01T00:00:01+00:00",
+                "model_id": "stub:test",
+                "thinking": "medium",
+                "tool_execution_mode": "serial",
+                "turns": [],
+                "outcome": {"status": "completed", "error_kind": "", "error_message": ""},
+                "retry_events": [],
+                "abort_events": [],
+                "compaction_events": [],
+                "session_metadata": {},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    md_path.write_text("# Trace Replay: run123\n", encoding="utf-8")
+
+    exit_code = main_module.main(["trace", "show", str(json_path)])
+    assert exit_code == 0
+    assert "run123" in capsys.readouterr().out
+
+    exit_code = main_module.main(["replay", str(md_path)])
+    assert exit_code == 0
+    assert "Trace Replay: run123" in capsys.readouterr().out
 
 
 def test_resource_loader_loads_python_extension_runtime_and_tool_registry(tmp_path: Path, stub_model: Model) -> None:

@@ -1,0 +1,41 @@
+{
+  "suite_id": "coding_agent_v2",
+  "description": "Deterministic baseline for coding_agent eval harness v2.",
+  "metrics": {
+    "pass_rate": {
+      "value": 1.0,
+      "comparator": "min",
+      "tolerance": 0.0
+    },
+    "avg_score": {
+      "value": 1.0,
+      "comparator": "min",
+      "tolerance": 0.0
+    },
+    "tool_success_rate": {
+      "value": 0.78,
+      "comparator": "min",
+      "tolerance": 0.0
+    },
+    "recovery_success_rate": {
+      "value": 1.0,
+      "comparator": "min",
+      "tolerance": 0.0
+    },
+    "memory_delta": {
+      "value": 0.0,
+      "comparator": "min",
+      "tolerance": 0.0
+    },
+    "context_retention_rate": {
+      "value": 0.88,
+      "comparator": "min",
+      "tolerance": 0.0
+    },
+    "abort_rate": {
+      "value": 0.0,
+      "comparator": "max",
+      "tolerance": 0.0
+    }
+  }
+}

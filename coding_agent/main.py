@@ -3,16 +3,20 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from .cli import parse_args
+from .cli import parse_args, parse_trace_args
 from .config.paths import build_agent_paths, find_project_settings_file
 from .core import AgentSession, ModelRegistry, ResourceLoader, SessionManager, SettingsManager
 from .core.multi_agent import TeamRuntime
+from .core.trace import TraceReplayLoader, resolve_trace_file, summarize_trace
 from .modes.interactive import InteractiveApp
 
 
 def main(argv: list[str] | None = None) -> int:
     """组装配置、资源、会话与交互模式，并启动程序。"""
 
+    argv = list(argv or [])
+    if argv and argv[0] in {"replay", "trace"}:
+        return _handle_trace_command(argv)
     args = parse_args(argv)
     workspace_root = Path(args.cwd).resolve()
     paths = build_agent_paths()
@@ -80,3 +84,43 @@ def main(argv: list[str] | None = None) -> int:
 
         return asyncio.run(_run_prompt())
     return asyncio.run(InteractiveApp(session, model_registry=registry).run())
+
+
+def _handle_trace_command(argv: list[str]) -> int:
+    args = parse_trace_args(argv)
+    paths = build_agent_paths()
+    session_manager = SessionManager(paths.sessions_dir)
+    if args.trace_command == "replay":
+        resolved = _resolve_trace_reference(session_manager, args.trace_ref)
+        if resolved is None:
+            raise FileNotFoundError(f"Unknown trace reference: {args.trace_ref}")
+        if resolved.suffix == ".md":
+            print(resolved.read_text(encoding="utf-8"), end="")
+            return 0
+        record = TraceReplayLoader.load(resolved)
+        from agent_core.trace import TraceSerializer
+
+        print(TraceSerializer.render_markdown(record), end="")
+        return 0
+    if args.trace_command == "trace" and args.trace_action == "show":
+        resolved = _resolve_trace_reference(session_manager, args.trace_ref)
+        if resolved is None:
+            raise FileNotFoundError(f"Unknown trace reference: {args.trace_ref}")
+        if resolved.suffix == ".md":
+            record = TraceReplayLoader.load(resolved.with_suffix(".json"))
+        else:
+            record = TraceReplayLoader.load(resolved)
+        print(summarize_trace(record))
+        return 0
+    raise ValueError("Unsupported trace command")
+
+
+def _resolve_trace_reference(session_manager: SessionManager, trace_ref: str) -> Path | None:
+    ref = Path(trace_ref)
+    if ref.exists() and ref.is_file():
+        return ref.resolve()
+    for session_file in session_manager._iter_session_files():
+        resolved = resolve_trace_file(session_file, trace_ref)
+        if resolved is not None:
+            return resolved.resolve()
+    return None
